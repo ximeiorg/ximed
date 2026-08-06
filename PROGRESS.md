@@ -56,6 +56,7 @@
   - 全仓 `cargo fmt --all` 统一格式（含 CRLF/LF 行尾）
   - 修复 clippy -D warnings 告警：let-chain 折叠嵌套 if（store/local、http、ws、desktop）、`BackendKind::from_str`→`from_name`（避免与 std FromStr 混淆）、无用 `.into()`、`MockClipboard` 补 Default、`SyncMode` derive Default、`if let`/`if` 替换单分支 match、`await_holding_lock`（测试 env_lock 场景 allow）
   - 75 个测试全绿；`cargo check -p app --no-default-features` 通过
+  - **Linux 托盘依赖修复**：muda 0.19 / tray-icon 0.24 关掉默认 feature 后 Linux 无平台实现（muda `unresolved import self::platform`）→ 显式启用两者 `gtk` feature；CI Linux 任务补装 `libgtk-3-dev libayatana-appindicator3-dev`（tray-icon gtk 会拉 libappindicator）
 - [x] P6 部署优化 / P7a HTTPS / P7b WebDAV / P7c 历史记录 / P7d 文件同步
 
 ## 待办（后续功能点）
