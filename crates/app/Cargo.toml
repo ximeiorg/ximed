@@ -70,9 +70,9 @@ toml = "0.9"
 # 桌面 UI（feature tray）：wgpu（GPU，Metal/Vulkan）优先，tiny-skia（CPU）自动兜底。
 # 低性能设备（树莓派等）无 GPU 时自动回退软渲染，无需额外配置。
 iced = { version = "0.14", optional = true, default-features = false, features = ["tokio", "wgpu", "tiny-skia", "x11", "wayland", "image"] }
-# 托盘（feature tray）
+# 托盘（feature tray）；Linux 需要 gtk 平台实现（muda 默认 feature 已关闭，需显式启用）
 tray-icon = { version = "0.24", optional = true, default-features = false }
-muda = { version = "0.19", optional = true, default-features = false }
+muda = { version = "0.19", optional = true, default-features = false, features = ["gtk"] }
 
 [dev-dependencies]
 tempfile = "3"
