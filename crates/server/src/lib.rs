@@ -19,9 +19,14 @@ use tracing_subscriber::EnvFilter;
 use config::Settings;
 
 /// 初始化 tracing 日志（幂等，重复调用自动忽略）。
+///
+/// 过滤器按配置级别放行本项目各 crate（server/service/client/app），
+/// 便于排查客户端推送、历史轮询等链路问题。
 pub fn init_tracing(level: &str) {
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::new(format!("server={level}")))
+        .with_env_filter(EnvFilter::new(format!(
+            "server={level},service={level},client={level},app={level}"
+        )))
         .try_init();
 }
 

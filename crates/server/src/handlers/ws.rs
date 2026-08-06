@@ -31,6 +31,12 @@ pub async fn ws_handler(
 
 /// 单连接处理：广播订阅 + 客户端消息循环（空闲超时断开）。
 async fn handle_socket(socket: WebSocket, state: SharedState) {
+    tracing::info!("ws client connected (user={})", state.auth.username);
+    handle_socket_impl(socket, state.clone()).await;
+    tracing::info!("ws client disconnected (user={})", state.auth.username);
+}
+
+async fn handle_socket_impl(socket: WebSocket, state: SharedState) {
     let (mut sender, mut receiver) = socket.split();
     let idle_timeout = Duration::from_secs(state.clipboard_cfg.idle_timeout_secs);
 

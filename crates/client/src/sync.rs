@@ -17,6 +17,18 @@ use crate::clipboard::ClipboardAdapter;
 use crate::config::ClientConfig;
 use crate::transport::{HttpTransport, Transport, WsTransport};
 
+/// 推送失败后的重试退避间隔：避免 server 未启动时每轮轮询都重试刷日志。
+const PUSH_RETRY_BACKOFF: Duration = Duration::from_secs(5);
+
+/// client 与 server 的连接状态（引擎上报，供桌面 UI 提示用户）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncStatus {
+    /// 已连接：push 成功或启动拉取成功。
+    Online,
+    /// 连接失败：本地 server 未启动或远程不可达。
+    Offline,
+}
+
 /// 一次同步决策的结果（供测试断言）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SyncAction {
@@ -40,6 +52,10 @@ pub struct SyncEngine {
     last_hash: Option<String>,
     /// 自写 hash：引擎写入本地剪贴板的内容 hash，用于回声抑制。
     self_written: Option<String>,
+    /// 推送失败后的退避截止时间：窗口内不重复尝试同一内容。
+    retry_until: Option<std::time::Instant>,
+    /// 连接状态回调（桌面形态注入：本地模式提示开启 server，远程模式提示不可用）。
+    status_handler: Option<Arc<dyn Fn(SyncStatus) + Send + Sync>>,
 }
 
 impl SyncEngine {
@@ -56,26 +72,44 @@ impl SyncEngine {
             clipboard,
             last_hash: None,
             self_written: None,
+            retry_until: None,
+            status_handler: None,
+        }
+    }
+
+    /// 注入连接状态回调（桌面 UI 提示用，引擎内不感知 UI）。
+    pub fn set_status_handler(&mut self, handler: Arc<dyn Fn(SyncStatus) + Send + Sync>) {
+        self.status_handler = Some(handler);
+    }
+
+    fn report_status(&self, status: SyncStatus) {
+        if let Some(h) = &self.status_handler {
+            h(status);
         }
     }
 
     /// 主循环：轮询本地 + 接收远端（WS 实时或 HTTP 轮询）。
     pub async fn run(&mut self) {
-        // 启动即拉取一次服务器快照（若本地为空则采纳服务器内容）
-        if let Ok(Some(remote)) = self.transport.pull().await {
-            if remote.r#type == ProfileType::Text {
-                let local = self.clipboard.get();
-                let should_adopt = match local {
-                    None => true,
-                    Some(l) => text_hash(&l) != remote.hash,
-                };
-                if should_adopt {
-                    let action = self.apply_remote(&remote);
-                    if matches!(action, SyncAction::Write(_)) {
-                        tracing::debug!("adopted server clipboard on start");
+        // 启动即拉取一次服务器快照（若本地为空则采纳服务器内容），并上报连接状态
+        match self.transport.pull().await {
+            Ok(Some(remote)) => {
+                self.report_status(SyncStatus::Online);
+                if remote.r#type == ProfileType::Text {
+                    let local = self.clipboard.get();
+                    let should_adopt = match local {
+                        None => true,
+                        Some(l) => text_hash(&l) != remote.hash,
+                    };
+                    if should_adopt {
+                        let action = self.apply_remote(&remote);
+                        if matches!(action, SyncAction::Write(_)) {
+                            tracing::debug!("adopted server clipboard on start");
+                        }
                     }
                 }
             }
+            Ok(None) => self.report_status(SyncStatus::Online),
+            Err(_) => self.report_status(SyncStatus::Offline),
         }
 
         let poll = Duration::from_millis(self.cfg.poll_ms);
@@ -102,6 +136,15 @@ impl SyncEngine {
 
     /// 本地轮询决策（纯逻辑，可单测）：剪贴板变化且非自写回声 → Push。
     pub fn on_local_poll(&mut self, local: Option<String>) -> SyncAction {
+        // 推送失败退避窗口内不重复尝试，避免 server 未启动时每轮轮询都重试刷日志
+        if let Some(deadline) = self.retry_until {
+            if std::time::Instant::now() < deadline {
+                return SyncAction::None;
+            }
+            // 退避结束：撤销 last_hash，允许重试上次失败的内容
+            self.retry_until = None;
+            self.last_hash = None;
+        }
         let Some(text) = local else {
             return SyncAction::None;
         };
@@ -147,8 +190,19 @@ impl SyncEngine {
         match action {
             SyncAction::None => {}
             SyncAction::Push(profile) => {
-                if let Err(e) = self.transport.push(&profile).await {
-                    tracing::warn!("push failed: {e}");
+                match self.transport.push(&profile).await {
+                    Ok(_) => {
+                        self.report_status(SyncStatus::Online);
+                    }
+                    Err(e) => {
+                        // server 未启动/不可达属预期场景，不在 warn 刷屏；
+                        // 状态经回调上报 UI，由 UI 按 SyncMode 提示用户。
+                        tracing::debug!("push failed: {e}");
+                        // 退避重试：间隔内不再尝试，server 起来后自动补推
+                        self.retry_until =
+                            Some(std::time::Instant::now() + PUSH_RETRY_BACKOFF);
+                        self.report_status(SyncStatus::Offline);
+                    }
                 }
             }
             SyncAction::Write(text) => {
@@ -181,6 +235,7 @@ mod tests {
         pushed: Mutex<Vec<Profile>>,
         remote: Mutex<Option<Profile>>,
         fail_pull: Mutex<bool>,
+        fail_push: Mutex<bool>,
     }
 
     impl MockTransport {
@@ -189,6 +244,7 @@ mod tests {
                 pushed: Mutex::new(vec![]),
                 remote: Mutex::new(remote),
                 fail_pull: Mutex::new(false),
+                fail_push: Mutex::new(false),
             }
         }
     }
@@ -196,6 +252,9 @@ mod tests {
     #[async_trait]
     impl Transport for MockTransport {
         async fn push(&self, profile: &Profile) -> Result<(), TransportError> {
+            if *self.fail_push.lock().unwrap() {
+                return Err(TransportError::Send("offline".into()));
+            }
             self.pushed.lock().unwrap().push(profile.clone());
             // 模拟服务器广播回写：设置远端为该内容
             *self.remote.lock().unwrap() = Some(profile.clone());
@@ -293,5 +352,68 @@ mod tests {
         let (mut e, cb) = engine_with_transport("dev-a", t.clone());
         let a = e.on_local_poll(cb.get());
         assert_eq!(a, SyncAction::None);
+    }
+
+    #[tokio::test]
+    async fn failed_push_is_retried_after_backoff() {
+        let t = Arc::new(MockTransport::new(None));
+        let (mut e, cb) = engine_with_transport("dev-a", t.clone());
+        cb.simulate_external_copy("hello");
+
+        // 推送失败：进入退避窗口，且不立即重试
+        *t.fail_push.lock().unwrap() = true;
+        let a = e.on_local_poll(cb.get());
+        assert!(matches!(a, SyncAction::Push(_)));
+        e.execute(a).await;
+        assert!(e.retry_until.is_some(), "failure must arm retry backoff");
+
+        // 退避窗口内：不再尝试
+        let a_skip = e.on_local_poll(cb.get());
+        assert_eq!(a_skip, SyncAction::None);
+
+        // 退避结束后：重试成功，且不重复推送
+        e.retry_until = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        *t.fail_push.lock().unwrap() = false;
+        let a2 = e.on_local_poll(cb.get());
+        assert!(matches!(a2, SyncAction::Push(_)));
+        e.execute(a2).await;
+        assert_eq!(t.pushed.lock().unwrap().len(), 1);
+        assert_eq!(e.last_hash.as_deref(), Some(text_hash("hello").as_str()));
+
+        let a3 = e.on_local_poll(cb.get());
+        assert_eq!(a3, SyncAction::None);
+    }
+
+    #[tokio::test]
+    async fn status_handler_reports_offline_and_online() {
+        let t = Arc::new(MockTransport::new(None));
+        let (mut e, cb) = engine_with_transport("dev-a", t.clone());
+        cb.simulate_external_copy("hello");
+
+        // 注入状态回调（UI 提示用）
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_cb = seen.clone();
+        e.set_status_handler(Arc::new(move |s: SyncStatus| {
+            seen_cb.lock().unwrap().push(s);
+        }));
+
+        // 推送失败 → Offline
+        *t.fail_push.lock().unwrap() = true;
+        let a = e.on_local_poll(cb.get());
+        e.execute(a).await;
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            &[SyncStatus::Offline]
+        );
+
+        // 退避结束后重试成功 → Online
+        e.retry_until = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        *t.fail_push.lock().unwrap() = false;
+        let a2 = e.on_local_poll(cb.get());
+        e.execute(a2).await;
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            &[SyncStatus::Offline, SyncStatus::Online]
+        );
     }
 }

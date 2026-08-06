@@ -168,6 +168,10 @@ impl ClipboardService {
             repo.get_current().await.unwrap_or_default()
         };
         if current.hash == profile.hash {
+            tracing::debug!(
+                "clipboard set idempotent, dropped (hash={})",
+                &profile.hash
+            );
             return Ok(PutOutcome::Unchanged);
         }
 
@@ -176,6 +180,13 @@ impl ClipboardService {
         *current_guard = Some(profile.clone());
         let event = ctx.record_event(profile.clone()).await;
         let _ = ctx.broadcast.send(event.clone());
+        tracing::info!(
+            "clipboard updated (seq={}, source={:?}, type={:?}, size={})",
+            event.seq,
+            profile.source,
+            profile.r#type,
+            profile.size
+        );
 
         // 写入 SQLite 历史（feature = history 时）
         #[cfg(feature = "history")]

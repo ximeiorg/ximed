@@ -14,6 +14,8 @@
 #[cfg(feature = "tray")]
 mod desktop;
 #[cfg(feature = "tray")]
+mod settings;
+#[cfg(feature = "tray")]
 mod tray;
 #[cfg(feature = "tray")]
 mod ui;
@@ -130,8 +132,9 @@ fn run_client_only() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 }
             });
         });
-        // client-only：无本地 server，不显示服务器控制区
-        ui::run_ui(ui_cfg, ui_tx, ui_cmd_tx, rx, false, String::new()).map_err(|e| e.into())
+        // client-only：无本地 server，不显示服务器控制区与设置面板
+        ui::run_ui(ui_cfg, settings::AppSettings::default(), ui_tx, ui_cmd_tx, rx, false, String::new())
+            .map_err(|e| e.into())
     }
 
     #[cfg(not(feature = "tray"))]
@@ -142,7 +145,7 @@ fn run_client_only() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let clipboard = Arc::new(SystemClipboard::new()?);
             let mut engine = SyncEngine::new(cfg, password, clipboard);
             engine.run().await;
-            Ok::<(), Box<dyn std::error::Error>>(())
+            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
         })
     }
 }

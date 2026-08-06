@@ -19,17 +19,20 @@
 use client::config::ClientConfig;
 use client::history::HistoryItem;
 use iced::widget::{
-    button, column, container, rule, row, scrollable, text,
+    button, column, container, rule, row, scrollable, text, Radio, TextInput,
 };
 use iced::{
     Alignment, Background, Border, Color, Element, Length, Subscription, Task, Theme, border,
 };
+
+use crate::settings::{AppSettings, SyncMode};
 
 /// 面板切换。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
     Status,
     History,
+    Settings,
 }
 
 /// 后台 → UI 的桌面级事件（跨线程 channel 负载）。
@@ -45,6 +48,10 @@ pub enum UiMsg {
     ServerStopped { addr: String },
     /// 剪贴板历史刷新。
     History { items: Vec<HistoryItem> },
+    /// client 连接状态上报（引擎 push/拉取结果）。
+    SyncStatus { online: bool },
+    /// 设置已保存并应用（连接模式/远程服务器已生效）。
+    SettingsApplied,
     /// 显示窗口（托盘菜单/左键点击触发）。
     ShowWindow,
     /// 隐藏窗口到托盘（托盘菜单触发）。
@@ -54,7 +61,7 @@ pub enum UiMsg {
 }
 
 /// UI → 后台的桌面级命令（跨线程 channel 负载）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiCmd {
     /// 启动本地 server。
     ServerStart,
@@ -64,6 +71,13 @@ pub enum UiCmd {
     ServerStop,
     /// 打开配置文件所在目录。
     OpenConfigDir,
+    /// 应用新设置（连接模式 + 远程服务器），持久化并重启 client 引擎。
+    ApplySettings {
+        mode: SyncMode,
+        remote_url: String,
+        remote_username: String,
+        remote_password: String,
+    },
 }
 
 /// UI 消息（iced Message：channel 事件 + 按钮动作）。
@@ -87,6 +101,16 @@ pub enum Message {
     OpenConfigDir,
     /// 退出按钮。
     Quit,
+    /// 切换连接模式（本地 / 远程 server）。
+    SettingsMode(SyncMode),
+    /// 远程服务器地址输入。
+    SettingsUrl(String),
+    /// 远程服务器用户名输入。
+    SettingsUsername(String),
+    /// 远程服务器密码输入。
+    SettingsPassword(String),
+    /// 保存并应用设置。
+    ApplySettings,
 }
 
 /// 窗口状态。
@@ -110,6 +134,18 @@ pub struct UiState {
     pub local_server: bool,
     /// 配置目录路径（打开文件管理器用）。
     pub config_dir: String,
+    /// 连接模式（本地 / 远程 server）。
+    pub sync_mode: SyncMode,
+    /// 远程服务器地址（设置面板编辑）。
+    pub remote_url: String,
+    /// 远程服务器用户名（设置面板编辑）。
+    pub remote_username: String,
+    /// 远程服务器密码（设置面板编辑）。
+    pub remote_password: String,
+    /// 设置保存状态提示文本。
+    pub settings_status: String,
+    /// client 是否已连上 server（引擎上报）。
+    pub sync_online: bool,
     /// 后台命令发送端。
     cmd_tx: UiCmdSender,
     /// 后台事件发送端（托盘事件也经此注入）。
@@ -123,6 +159,7 @@ pub struct UiState {
 impl UiState {
     pub fn new(
         cfg: &ClientConfig,
+        app_settings: &AppSettings,
         tx: UiSender,
         cmd_tx: UiCmdSender,
         local_server: bool,
@@ -138,6 +175,12 @@ impl UiState {
             history: Vec::new(),
             local_server,
             config_dir,
+            sync_mode: app_settings.mode,
+            remote_url: app_settings.remote_url.clone(),
+            remote_username: app_settings.remote_username.clone(),
+            remote_password: app_settings.remote_password.clone().unwrap_or_default(),
+            settings_status: String::new(),
+            sync_online: false,
             cmd_tx,
             tx,
             window_id: None,
@@ -168,20 +211,28 @@ pub fn ui_cmd_channel() -> (UiCmdSender, std::sync::mpsc::Receiver<UiCmd>) {
 /// - `config_dir`：配置文件所在目录（打开文件管理器用）。
 pub fn run_ui(
     cfg: ClientConfig,
+    app_settings: AppSettings,
     tx: UiSender,
     cmd_tx: UiCmdSender,
     rx: std::sync::mpsc::Receiver<UiMsg>,
     local_server: bool,
     config_dir: String,
 ) -> iced::Result {
-    let state = UiState::new(&cfg, tx, cmd_tx, local_server, config_dir);
+    let state = UiState::new(&cfg, &app_settings, tx, cmd_tx, local_server, config_dir);
     let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+    // 窗口图标：编译期嵌入 PNG（512×512 RGBA），解码失败视为程序 bug。
+    let icon = iced::window::icon::from_file_data(include_bytes!("../assets/icon.png"), None)
+        .expect("embedded window icon must decode");
     iced::application(
         move || (state.clone(), Task::none()),
         update,
         view,
     )
     .title("ximed")
+    .window(iced::window::Settings {
+        icon: Some(icon),
+        ..Default::default()
+    })
     .exit_on_close_request(false)
     .subscription(move |_state| {
         Subscription::batch([
@@ -233,6 +284,12 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
         Message::Backend(UiMsg::History { items }) => {
             state.history = items;
         }
+        Message::Backend(UiMsg::SyncStatus { online }) => {
+            state.sync_online = online;
+        }
+        Message::Backend(UiMsg::SettingsApplied) => {
+            state.settings_status = "已保存并应用。".to_string();
+        }
         Message::Backend(UiMsg::ShowWindow) => {
             return show_window(state);
         }
@@ -267,6 +324,35 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
         }
         Message::OpenConfigDir => {
             let _ = state.cmd_tx.send(UiCmd::OpenConfigDir);
+        }
+        Message::SettingsMode(mode) => {
+            state.sync_mode = mode;
+            state.settings_status = String::new();
+        }
+        Message::SettingsUrl(url) => {
+            state.remote_url = url;
+            state.settings_status = String::new();
+        }
+        Message::SettingsUsername(username) => {
+            state.remote_username = username;
+            state.settings_status = String::new();
+        }
+        Message::SettingsPassword(password) => {
+            state.remote_password = password;
+            state.settings_status = String::new();
+        }
+        Message::ApplySettings => {
+            let cmd = UiCmd::ApplySettings {
+                mode: state.sync_mode,
+                remote_url: state.remote_url.clone(),
+                remote_username: state.remote_username.clone(),
+                remote_password: state.remote_password.clone(),
+            };
+            if state.cmd_tx.send(cmd).is_ok() {
+                state.settings_status = "正在保存并应用…".to_string();
+            } else {
+                state.settings_status = "保存失败：后台通道不可用。".to_string();
+            }
         }
         Message::Quit => {
             return iced::exit();
@@ -474,20 +560,27 @@ fn danger_button(theme: &Theme, status: button::Status) -> button::Style {
 
 fn view(state: &UiState) -> Element<'_, Message> {
     // 左分栏：面板导航
-    let nav = column![
+    let mut nav = column![
         text("ximed").size(20).color(TEXT_MAIN).font(iced::Font::DEFAULT),
         text("剪贴板同步").size(11).color(TEXT_MUTED),
         rule::horizontal(1),
         nav_button("状态", Panel::Status, state.panel),
         nav_button("剪贴板历史", Panel::History, state.panel),
         rule::horizontal(1),
+    ]
+    .spacing(6)
+    .padding(12);
+
+    // 设置面板仅 desktop 形态（存在本地 server 可切换）显示
+    if state.local_server {
+        nav = nav.push(nav_button("设置", Panel::Settings, state.panel));
+    }
+    nav = nav.push(
         button(text("退出").color(RED))
             .on_press(Message::Quit)
             .width(Length::Fill)
             .style(danger_button),
-    ]
-    .spacing(6)
-    .padding(12);
+    );
 
     let sidebar = container(nav)
         .width(160)
@@ -499,6 +592,7 @@ fn view(state: &UiState) -> Element<'_, Message> {
     let content = match state.panel {
         Panel::Status => status_view(state),
         Panel::History => history_view(state),
+        Panel::Settings => settings_view(state),
     };
     let content = container(content)
         .width(Length::Fill)
@@ -561,9 +655,9 @@ fn status_view(state: &UiState) -> Element<'_, Message> {
             text("状态").size(20).color(TEXT_MAIN),
             text("服务与同步引擎运行情况").size(12).color(TEXT_MUTED),
             rule::horizontal(1),
-            stat_row("服务器", server_value, server_up),
-            stat_row("设备", state.source.clone(), true),
-            stat_row("同步引擎", state.engine_status.clone(), engine_up),
+            stat_row("服务器", server_value, server_up, server_hint(state)),
+            stat_row("设备", state.source.clone(), true, None),
+            stat_row("同步引擎", state.engine_status.clone(), engine_up, None),
         ]
         .spacing(10)
         .padding(12),
@@ -573,8 +667,9 @@ fn status_view(state: &UiState) -> Element<'_, Message> {
 
     let mut content = column![info_card].spacing(12).padding(8);
 
-    // 服务器控制区：仅本地 server（desktop 形态）显示
-    if state.local_server {
+    // 服务器控制区：仅本地 server（desktop 形态 + 本地模式）显示；
+    // 远程模式 client 连远程 server，本地 server 控制无意义。
+    if state.local_server && state.sync_mode == SyncMode::Local {
         let controls = server_controls(state);
         content = content.push(controls);
     }
@@ -583,6 +678,29 @@ fn status_view(state: &UiState) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
+}
+
+/// 服务器状态行的括号提示（按 SyncMode）：
+///
+/// - 本地模式：server 未运行 → 提示点击「开启」。
+/// - 远程模式：连不上 → 提示远程不可用；已连接 → 绿色标注。
+fn server_hint(state: &UiState) -> Option<(String, Color)> {
+    match state.sync_mode {
+        SyncMode::Local => {
+            if state.server_running {
+                None
+            } else {
+                Some(("（未启动，请点击「开启」）".to_string(), RED))
+            }
+        }
+        SyncMode::Remote => {
+            if state.sync_online {
+                Some(("（已连接）".to_string(), GREEN))
+            } else {
+                Some(("（远程服务器不可用，请检查设置）".to_string(), RED))
+            }
+        }
+    }
 }
 
 /// 本地服务器控制卡片：开启 / 重启 / 关闭 + 打开配置文件目录。
@@ -626,16 +744,24 @@ fn server_controls(state: &UiState) -> Element<'static, Message> {
     .into()
 }
 
-/// 状态行：彩色圆点 + 标签 + 值。
-fn stat_row(label: &'static str, value: String, ok: bool) -> Element<'static, Message> {
-    row![
+/// 状态行：彩色圆点 + 标签 + 值 + 可选的括号提示（如「未启动，请点击开启」）。
+fn stat_row(
+    label: &'static str,
+    value: String,
+    ok: bool,
+    hint: Option<(String, Color)>,
+) -> Element<'static, Message> {
+    let mut content = row![
         stat_dot(ok),
         text(label).size(14).color(TEXT_MUTED).width(Length::Fixed(80.0)),
         text(value).size(14).color(TEXT_MAIN),
     ]
-    .spacing(10)
-    .align_y(Alignment::Center)
-    .into()
+    .spacing(4)
+    .align_y(Alignment::Center);
+    if let Some((hint, color)) = hint {
+        content = content.push(text(hint).size(13).color(color));
+    }
+    content.into()
 }
 
 /// 绿/红状态圆点。
@@ -722,7 +848,62 @@ fn history_view(state: &UiState) -> Element<'_, Message> {
         .into()
 }
 
-/// 订阅身份 + 数据：包裹接收端，实现 `Hash + Clone` 供 `Subscription::run_with`。
+/// 设置面板：连接模式（本地 / 远程 server）+ 远程服务器表单 + 保存。
+fn settings_view(state: &UiState) -> Element<'_, Message> {
+    let mode_local = Radio::new("本地服务器", SyncMode::Local, Some(state.sync_mode), Message::SettingsMode);
+    let mode_remote = Radio::new("远程服务器", SyncMode::Remote, Some(state.sync_mode), Message::SettingsMode);
+
+    let hint = match state.sync_mode {
+        SyncMode::Local => text("client 自动连接本机 server，地址/端口跟随 server 配置。")
+            .size(12)
+            .color(TEXT_MUTED),
+        SyncMode::Remote => text("client 连接下方配置的远程 server；切换后本机 server 将停止。")
+            .size(12)
+            .color(TEXT_MUTED),
+    };
+
+    let mut body = column![
+        text("设置").size(20).color(TEXT_MAIN),
+        text("连接模式与远程服务器").size(12).color(TEXT_MUTED),
+        rule::horizontal(1),
+        row![mode_local, mode_remote].spacing(16),
+        hint,
+    ]
+    .spacing(10)
+    .padding(12);
+
+    if state.sync_mode == SyncMode::Remote {
+        body = body.push(
+            column![
+                text("远程服务器地址").size(12).color(TEXT_MUTED),
+                TextInput::new("https://example.com:8443", &state.remote_url)
+                    .on_input(Message::SettingsUrl),
+                text("用户名").size(12).color(TEXT_MUTED),
+                TextInput::new("alice", &state.remote_username)
+                    .on_input(Message::SettingsUsername),
+                text("密码").size(12).color(TEXT_MUTED),
+                TextInput::new("", &state.remote_password)
+                    .secure(true)
+                    .on_input(Message::SettingsPassword),
+            ]
+            .spacing(8),
+        );
+    }
+
+    body = body.push(
+        button("保存并应用")
+            .on_press(Message::ApplySettings)
+            .padding(10)
+            .style(primary_button),
+    );
+    body = body.push(text(&state.settings_status).size(12).color(TEXT_MUTED));
+
+    container(body)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(card)
+        .into()
+}
 #[derive(Clone)]
 struct RxId(std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<UiMsg>>>);
 

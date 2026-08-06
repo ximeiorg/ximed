@@ -48,6 +48,26 @@ pub fn basic_auth_header(username: &str, password: &str) -> String {
 
 type WsStream = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
+/// 构造 WS 握手请求：由 URL 生成标准请求（含 Sec-WebSocket-Key / Upgrade / Version），
+/// 再补 Basic Auth 认证头。
+///
+/// 不能手动用 `http::Request::builder()` 拼：tungstenite 的 `IntoClientRequest`
+/// 对裸 `http::Request` 要求预置 `Sec-WebSocket-Key`，缺失会直接报
+/// `MissingSecWebSocketKey` 导致握手失败。
+fn build_connect_request(
+    url: &str,
+    auth: &str,
+) -> Result<http::Request<()>, TransportError> {
+    let mut request =
+        tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(url)
+            .map_err(|e| TransportError::Connect(e.to_string()))?;
+    let header = auth
+        .parse::<http::header::HeaderValue>()
+        .map_err(|e| TransportError::Connect(e.to_string()))?;
+    request.headers_mut().insert(http::header::AUTHORIZATION, header);
+    Ok(request)
+}
+
 /// WS 实时通道。连接拆分为 sink/stream 分别持锁，避免锁跨 await。
 pub struct WsTransport {
     url: String,
@@ -70,11 +90,7 @@ impl WsTransport {
         if self.sink.lock().await.is_some() {
             return Ok(());
         }
-        let request = http::Request::builder()
-            .uri(&self.url)
-            .header(http::header::AUTHORIZATION, &self.auth)
-            .body(())
-            .map_err(|e| TransportError::Connect(e.to_string()))?;
+        let request = build_connect_request(&self.url, &self.auth)?;
         let (ws, resp) = tokio_tungstenite::connect_async(request)
             .await
             .map_err(|e| TransportError::Connect(e.to_string()))?;
@@ -275,6 +291,31 @@ mod tests {
         assert_eq!(
             basic_auth_header("alice", "secret"),
             "Basic YWxpY2U6c2VjcmV0"
+        );
+    }
+
+    #[test]
+    fn ws_handshake_request_carries_required_headers() {
+        // 回归：旧实现手动拼 http::Request，缺失 Sec-WebSocket-Key 导致握手失败
+        let req = build_connect_request("ws://127.0.0.1:8443/sync", "Basic YWxpY2U6c2VjcmV0")
+            .expect("request must build");
+        assert!(
+            req.headers().contains_key(http::header::SEC_WEBSOCKET_KEY),
+            "handshake must carry Sec-WebSocket-Key"
+        );
+        assert_eq!(
+            req.headers().get(http::header::UPGRADE).and_then(|v| v.to_str().ok()),
+            Some("websocket")
+        );
+        assert_eq!(
+            req.headers()
+                .get(http::header::SEC_WEBSOCKET_VERSION)
+                .and_then(|v| v.to_str().ok()),
+            Some("13")
+        );
+        assert_eq!(
+            req.headers().get(http::header::AUTHORIZATION).and_then(|v| v.to_str().ok()),
+            Some("Basic YWxpY2U6c2VjcmV0")
         );
     }
 }
