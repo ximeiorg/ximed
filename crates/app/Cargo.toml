@@ -3,15 +3,54 @@ name = "app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Windows 下把 assets/icon.ico 嵌入 ximed-desktop/ximed-client 可执行文件资源
+build = "build.rs"
+
+[lib]
+name = "app"
+path = "src/lib.rs"
 
 [[bin]]
-name = "ximed"
-path = "src/main.rs"
+name = "ximed-server"
+path = "src/bin/ximed-server.rs"
+
+[[bin]]
+name = "ximed-desktop"
+path = "src/bin/ximed-desktop.rs"
+required-features = ["tray"]
+
+[[bin]]
+name = "ximed-client"
+path = "src/bin/ximed-client.rs"
 
 [features]
 default = ["tray"]
 # 托盘/窗口 UI（桌面形态）；server-only 构建可关掉以减小体积
 tray = ["dep:tray-icon", "dep:muda", "dep:iced"]
+
+# cargo-packager 打包配置（CI nightly 生成 desktop 安装包）。
+# version / out-dir / binaries-dir 等由 cargo-packager 从 cargo metadata 自动填充，
+# 运行方式：cargo packager --release --target <triple> --formats <f>（见 .github/workflows/nightly.yml）
+[package.metadata.packager]
+product-name = "ximed"
+identifier = "dev.ximed.desktop"
+description = "ximed 输入法数据同步服务（桌面形态）"
+homepage = ""
+authors = ["ximed"]
+category = "Utility"
+license-file = "../../LICENSE"
+icons = ["assets/icon.png", "assets/icon.ico"]
+binaries = [{ path = "ximed-desktop", main = true }]
+
+[package.metadata.packager.deb]
+section = "utils"
+priority = "optional"
+
+[package.metadata.packager.nsis]
+installer-icon = "assets/icon.ico"
+languages = ["SimpChinese", "English"]
+installer-mode = "currentUser"
+appdata-paths = ["$LOCALAPPDATA/$IDENTIFIER"]
 
 [dependencies]
 server = { path = "../server" }
@@ -37,3 +76,6 @@ muda = { version = "0.19", optional = true, default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
+
+[build-dependencies]
+embed-resource = "3.0"

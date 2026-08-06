@@ -1,13 +1,21 @@
 # PROGRESS
 
-> 更新：2026-08-06 · 阶段：三形态架构（server/client/desktop）实现完成（未提交）
+> 更新：2026-08-06 · 阶段：三形态架构 + 发布打包（CI nightly/release）实现完成（未提交）
 
 ## 当前状态
 
 - **三形态架构完成**：
-  - Form 1 `ximed server`（或 `server` 二进制）：仅服务器，release 3MB
-  - Form 2 `ximed desktop`：同进程 client + iced 窗口 + 托盘 + **受控 server**（不自动启动，UI 手动启停）；**零配置启动**（未配密码时自动生成随机密码落盘 `{data_dir}/auth_password`，权限 0600，client 复用）
-  - Form 3 `ximed client`：仅客户端 daemon + 托盘（默认构建）；无 UI 构建下退化为纯 daemon
+  - Form 1 `ximed-server` 二进制：仅服务器，release ~3MB
+  - Form 2 `ximed-desktop` 二进制：同进程 client + iced 窗口 + 托盘 + **受控 server**（不自动启动，UI 手动启停）；**零配置启动**（未配密码时自动生成随机密码落盘 `{data_dir}/auth_password`，权限 0600，client 复用）
+  - Form 3 `ximed-client` 二进制：仅客户端 daemon + 托盘（默认构建）；无 UI 构建下退化为纯 daemon
+  - `crates/app` 已重构为 **lib + 三个 bin**（`src/bin/ximed-server.rs` / `ximed-desktop.rs`（required-features=tray）/ `ximed-client.rs`）；`--no-default-features` 只出 server + 纯 daemon client
+- **发布打包（CI）**：
+  - `.github/workflows/build-packages.yml`（可复用，`publish` 输入：none/tag/nightly）：Windows x86_64 + Linux x86_64/aarch64/armv7(musl) + macOS aarch64/x86_64 矩阵
+  - server 包 = 裸二进制归档（zip/tar.gz + systemd unit）；desktop 包 = 桌面包格式（Windows NSIS setup.exe + 便携 zip / Linux deb + AppImage / macOS dmg）
+  - 桌面包由 **cargo-packager**（Tauri 同源）生成，配置在 `[package.metadata.packager]`（crates/app/Cargo.toml）
+  - Windows exe 图标：`assets/icon.ico`（多尺寸）+ build.rs/embed-resource 嵌入 PE 资源
+  - `.github/workflows/nightly.yml`：每日 02:00 UTC + 手动；产物文件名带构建日期；`publish=nightly` 删除旧并重建**滚动 nightly release**（始终一个，含最新全部包）
+  - `.github/workflows/release.yml`：v* tag 触发，`publish=tag` 发布版本 GitHub Release
 - **UI 左右分栏**（iced）：左侧导航（状态/剪贴板历史）+ 右侧内容面板
   - 状态面板：server / engine / 设备状态 + **本地服务器控制区**（仅 desktop 显示：开启/重启/关闭 + 打开配置文件所在目录）
   - 历史面板：后台线程周期拉取 `/api/clipboard/history`（3s）显示剪贴板历史列表
@@ -25,7 +33,7 @@
 
 1. 审查未提交变更后提交
 2. 端到端实测：desktop 点「开启」→ 本地 server 启动 → 真实剪贴板复制 → 同步到其他设备
-3. 可选：macOS .app 打包（LSUIElement）、Linux 桌面测试
+3. 触发一次 CI 验证：nightly 手动跑通，确认各平台桌面包格式产出
 
 ## 已完成
 
@@ -37,6 +45,12 @@
   - **desktop 形态**：iced 窗口（主线程）+ 后台 tokio 线程承载 client 引擎 + 历史轮询 + **受控 server**；server 不自动启动，UI 控制区按钮经 `UiCmd` 通道启停
   - **托盘**：tray-icon + muda（`tray` feature 门控）；菜单（状态/显示窗口/退出）+ 左键点击；事件经 proxy 转发 iced
   - **部署文件**：`deploy/ximed.desktop.systemd.service`（桌面 systemd user unit）+ `deploy/com.ximed.desktop.plist`（macOS launchd，含 LSUIElement 说明）+ `deploy/ximed.desktop.toml.example`（桌面配置示例）
+- [x] **发布打包（本次）**：
+  - **app crate 拆 lib + 三 bin**：`ximed-server` / `ximed-desktop`(required-features tray) / `ximed-client`；server 包 `--no-default-features` 最小体积
+  - **桌面图标**：`assets/icon.png`(512) + `assets/icon.ico`(多尺寸)；iced 窗口图标（`window::Settings.icon`）+ Windows exe 图标（build.rs + embed-resource）
+  - **cargo-packager 配置**：`[package.metadata.packager]`（deb/nsis 配置），CI 里 `cargo packager --target <triple> --formats <f>` 出 NSIS/deb/AppImage/dmg；`cargo install cargo-packager --locked`
+  - **三个 workflow**：`build-packages.yml`（workflow_call 矩阵）/ `nightly.yml`（schedule+manual，产物带日期）/ `release.yml`（v* tag → GitHub Release）
+  - 本地已验证：`cargo packager --formats nsis` 产出 `ximed-desktop_0.1.0_x64-setup.exe`；exe 图标资源嵌入确认
 - [x] P6 部署优化 / P7a HTTPS / P7b WebDAV / P7c 历史记录 / P7d 文件同步
 
 ## 待办（后续功能点）

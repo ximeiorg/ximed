@@ -1,0 +1,24 @@
+# ximed release 构建：推送 v* tag 时构建 server + desktop 各平台包并发布 GitHub Release。
+#
+# 实际构建矩阵见 build-packages.yml（可复用工作流）。
+# 产物：ximed-server-<target>.*、ximed-desktop-<target>.<格式>
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-packages.yml
+    with:
+      publish: tag
+      include-date: false
