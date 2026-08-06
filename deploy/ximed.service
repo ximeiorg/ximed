@@ -1,0 +1,34 @@
+[Unit]
+Description=ximed clipboard sync server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ximed
+Group=ximed
+WorkingDirectory=/var/lib/ximed
+Environment="XIMED_AUTH_PASSWORD="
+Environment="RUST_LOG=server=info"
+# 树莓派单核场景：限制 worker 线程
+Environment="XIMED__SERVER__WORKERS=1"
+ExecStart=/usr/local/bin/ximed-server
+Restart=always
+RestartSec=3
+
+# 资源与安全限制（低性能设备友好）
+LimitNOFILE=1024
+LimitNPROC=64
+MemoryMax=64M
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ximed
+
+# 日志走 journald
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

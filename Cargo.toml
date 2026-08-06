@@ -6,3 +6,11 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+
+# 低性能设备（树莓派）部署优化：体积/速度优先
+[profile.release]
+opt-level = "z"          # 最小体积
+lto = true               # 跨 crate 链接时优化
+codegen-units = 1        # 单单元提升优化机会
+strip = true             # 剥离符号表
+panic = "abort"          # 无 unwinding，减体积省内存

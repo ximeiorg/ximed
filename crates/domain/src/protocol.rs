@@ -8,6 +8,7 @@ use crate::profile::Profile;
 /// { "type": "auth", "user": "alice", "token": "xxx" }
 /// { "type": "clipboard.set", "data": { ...profile... } }
 /// { "type": "clipboard.get" }
+/// { "type": "file.get", "name": "photo.jpg" }   → 服务器回 binary 帧
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -18,6 +19,12 @@ pub enum ClientMessage {
     ClipboardSet { data: Profile },
     #[serde(rename = "clipboard.get")]
     ClipboardGet,
+    /// 请求附件内容（服务器回 `file.data` binary 帧）。
+    #[serde(rename = "file.get")]
+    FileGet { name: String },
+    /// 声明接下来发送的附件文件名（随后是 binary 数据帧）。
+    #[serde(rename = "file.set")]
+    FileSet { name: String },
     /// 心跳。
     Ping,
 }
@@ -51,6 +58,23 @@ pub mod sse_event {
     pub const CLIPBOARD: &str = "clipboard";
     /// 心跳事件：`event: ping`。
     pub const PING: &str = "ping";
+}
+
+/// 带单调事件序号的剪贴板变更事件（SSE `id` / WS 去重 / Last-Event-ID 续传共用）。
+///
+/// 广播通道携带该类型，序号由 service 层在每次成功 PUT 时递增。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClipboardEvent {
+    /// 单调递增事件序号（从 1 开始）。
+    pub seq: u64,
+    /// 变更后的剪贴板 profile。
+    pub profile: Profile,
+}
+
+impl ClipboardEvent {
+    pub fn new(seq: u64, profile: Profile) -> Self {
+        Self { seq, profile }
+    }
 }
 
 #[cfg(test)]
@@ -135,5 +159,13 @@ mod tests {
             }
             other => panic!("expected changed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn clipboard_event_holds_seq_and_profile() {
+        let p = Profile::from_text("hi", None);
+        let ev = ClipboardEvent::new(42, p.clone());
+        assert_eq!(ev.seq, 42);
+        assert_eq!(ev.profile, p);
     }
 }

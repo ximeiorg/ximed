@@ -1,0 +1,17 @@
+# 交叉编译配置（树莓派 aarch64/armv7）
+# 用法：
+#   1. 安装 target: rustup target add aarch64-unknown-linux-musl
+#   2. 安装 musl 交叉编译器（macOS: brew install filosottile/musl-cross/musl-cross）
+#   3. cargo build --release --target aarch64-unknown-linux-musl
+#     （或使用 alias: cargo build-rpi）
+
+[alias]
+build-rpi = "build --release --target aarch64-unknown-linux-musl"
+build-rpi-armv7 = "build --release --target armv7-unknown-linux-musleabihf"
+
+# 交叉编译时使用 musl-gcc（静态链接，无 openssl）
+[target.aarch64-unknown-linux-musl]
+linker = "aarch64-linux-musl-gcc"
+
+[target.armv7-unknown-linux-musleabihf]
+linker = "arm-linux-musleabihf-gcc"

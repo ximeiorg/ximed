@@ -256,8 +256,8 @@ config = { version = "0.15", default-features = true }  # toml/yaml/json/env
 **加载优先级**（Builder 按序 `add_source`，后添加者优先）：
 
 ```
-1. 内嵌默认值   MemorySource::new()  ← include_str!("../../default.toml")
-2. 环境变量     Environment::default().try_parsing(true)   XIMED_* 前缀
+1. 内嵌默认值   MemorySource::new()  ← include_str!("../default.toml")
+2. 环境变量     Environment::prefix("XIMED").separator("__").try_parsing(true)
 3. 配置文件     ./ximed.toml（required(false)）
 4. 配置文件     /app/ximed.toml（required(false)）
 5. 配置文件     /etc/ximed/config.toml（required(false)）  ← 最高优先级
@@ -312,7 +312,7 @@ impl Settings {
         let s = Config::builder()
             .add_source(MemorySource::new())          // 1. 内嵌默认值
             .add_source(
-                Environment::default().prefix("XIMED").try_parsing(true)  // 2. 环境变量
+                Environment::default().prefix("XIMED").separator("__").try_parsing(true)  // 2. 环境变量（双下划线嵌套）
             )
             .add_source(File::with_name("ximed.toml").required(false))        // 3. 当前目录
             .add_source(File::with_name("/app/ximed.toml").required(false))   // 4. /app
@@ -371,8 +371,8 @@ crates/ximed/
 [server]
 addr = "0.0.0.0:8443"          # 监听地址
 data_dir = "./data"             # 数据目录（存储后端用）
-workers = null                  # tokio worker 线程数（null = 按 CPU，低端设备可设 1）
 log_level = "info"              # trace/debug/info/warn/error
+# workers = 1                   # tokio worker 线程数（缺省 = 按 CPU，低端设备可设 1）
 
 [auth]
 username = "alice"              # Basic Auth 用户名
@@ -383,8 +383,6 @@ max_connections = 32            # 最大并发连接（WS/SSE 合计），防资
 max_frame_size = 1048576        # 单帧/单条上限（字节，默认 1MB）
 idle_timeout_secs = 60          # 长连接无消息判定离线（秒）
 heartbeat_interval_secs = 30    # 客户端心跳间隔（秒，客户端按此值发 ping）
-default_profile = { type = "text", hash = "", text = "", has_data = false,
-                    data_name = null, size = 0, source = null }  # 空剪贴板初始值
 
 [http]
 enabled = true                  # 是否启用 HTTP REST 通道（Xime 主通道）
@@ -421,7 +419,7 @@ cert_env = "XIMED_TLS_CERT"
 key_env = "XIMED_TLS_KEY"
 ```
 
-**敏感项约定**：所有密码/密钥类配置（`auth.password`、webdav/s3/turso 凭据、tls 证书）一律通过 `XIMED_*` 环境变量注入（Environment 源 `prefix("XIMED")` + 双下划线嵌套映射，如 `XIMED_AUTH_PASSWORD`），`ximed.toml` 不落盘明文。环境变量 `try_parsing(true)` 自动把字符串解析为 bool/int 等类型。
+**敏感项约定**：所有密码/密钥类配置（`auth.password`、webdav/s3/turso 凭据、tls 证书）一律通过环境变量注入，`ximed.toml` 不落盘明文。config-rs `Environment` 源 `prefix("XIMED")` + `separator("__")` 双下划线嵌套映射：`XIMED__SERVER__ADDR` → `server.addr`、`XIMED__AUTH__PASSWORD_ENV` → `auth.password_env`；环境变量 `try_parsing(true)` 自动把字符串解析为 bool/int 等类型。认证密码本身不通过 config 解析，而是 `auth.password_env` 指向的环境变量名（默认 `XIMED_AUTH_PASSWORD`）在启动时用 `std::env::var` 直接读取。
 
 ## 6. 认证与安全
 
@@ -454,38 +452,46 @@ tokio = { version = "1", features = ["rt", "macros"] }
 
 **验证无 openssl 依赖**：`cargo tree -i openssl` 应无结果；CI 增加此检查（含各 feature 组合）。
 
-## 8. Workspace 结构
+## 8. Workspace 结构（分层 crate，依赖单向 server → service → store → domain）
 
 ```
 ximed/
 ├── Cargo.toml                 # [workspace] members = ["crates/*"]
 ├── crates/
-│   ├── ximed/                 # 服务器二进制
-│   │   ├── default.toml       # 内嵌默认配置（include_str! 编译进二进制）
-│   │   ├── src/main.rs        # 启动、路由装配、通道选择
-│   │   ├── src/auth.rs        # Basic Auth 校验（三通道共用）
-│   │   ├── src/ws.rs          # WS 通道处理
-│   │   ├── src/sse.rs         # SSE 通道处理
-│   │   ├── src/http.rs        # HTTP REST / 轮询通道
-│   │   ├── src/store.rs       # 存储装配（按 feature 选择后端）
-│   │   └── src/config.rs      # Settings + MemorySource + 多路径文件 + 环境变量
-│   └── ximed-core/            # 共享库
-│       ├── src/profile.rs     # Profile 类型
-│       ├── src/hash.rs        # SHA256 hash 计算
-│       ├── src/protocol.rs    # WS/SSE/HTTP 消息帧类型
-│       ├── src/storage.rs     # Storage trait + LocalStorage
-│       └── src/lib.rs
+│   ├── domain/                # 领域层：纯模型与协议，零业务依赖
+│   │   ├── src/profile.rs     # Profile 类型
+│   │   ├── src/hash.rs        # SHA256 hash 计算
+│   │   ├── src/protocol.rs    # WS/SSE/HTTP 消息帧类型
+│   │   └── src/storage.rs     # Storage trait（抽象）
+│   ├── store/                 # 存储层：Storage 实现 + 数据仓库
+│   │   ├── src/local.rs       # LocalStorage（原子写 tmp+rename）
+│   │   ├── src/clipboard.rs   # ClipboardRepo（当前剪贴板存取封装）
+│   │   └── src/store_factory.rs # 后端装配（按配置选择）
+│   ├── service/               # 服务层：业务逻辑
+│   │   ├── src/clipboard.rs   # ClipboardService（校验/幂等/广播/缓存）+ ClipboardContext
+│   │   └── src/lib.rs
+│   └── server/                # handler 层：HTTP/WS 入口（axum）
+│       ├── default.toml       # 内嵌默认配置（include_str! 编译进二进制）
+│       └── src/
+│           ├── main.rs        # 启动、路由装配、通道选择
+│           ├── config.rs      # Settings + MemorySource + 多路径文件 + 环境变量
+│           ├── auth.rs        # Basic Auth 校验（三通道共用）
+│           ├── state.rs       # AppState（组合 service 上下文 + 配置）
+│           └── handlers/
+│               ├── http.rs    # HTTP REST handler
+│               └── ws.rs      # WS handler
 ```
 
 ```
-应用层状态：
+handler 层状态（server crate）：
 ┌─────────────────────────────────────────┐
 │ AppState                                │
-│  broadcast: broadcast::Sender<Profile>  // 变更广播（三通道共用）
-│  current:   Arc<RwLock<Option<Profile>>>// 当前剪贴板缓存
-│  store:     Arc<dyn Storage>            // 抽象存储（后端可插拔）
-│  auth:      Arc<AuthConfig>             // 认证配置
-│  seq:       AtomicU64                   // 事件序号（SSE Last-Event-ID）
+│  clipboard: ClipboardContext            │
+│    ├─ broadcast: broadcast::Sender<Profile>  // 变更广播（三通道共用）
+│    ├─ current:   Arc<RwLock<Option<Profile>>>// 当前剪贴板缓存
+│    └─ store:     Arc<dyn Storage>            // 抽象存储（后端可插拔）
+│  auth:      AuthConfig                  // 认证配置
+│  clipboard_cfg: ClipboardConfig         // 帧大小/心跳/超时配置
 └─────────────────────────────────────────┘
 ```
 
@@ -583,4 +589,4 @@ panic = "abort"
 7. **S3/WebDAV 为可选 feature**：默认 local，避免 aws-sdk 大依赖拖累低端设备
 8. **不引入 MQTT**：Xime 手机端已采用 HTTP 事件触发（零长连接，最省电），MQTT 的省电优势建立在常驻连接之上，反而更费；未来若出现真实"实时推送"客户端需求，再评估 MQTT 替代 WS/SSE（当前阶段不做）
 9. **历史记录用 `libsql` SDK 手写 SQL，不引入 ORM**：调研确认 toasty 是目前唯一原生提供 Turso driver 的 ORM（`toasty-driver-turso`），但 toasty 0.9.0 较新、API 不稳定；本地嵌入式 Turso 实际是 SQLite 兼容，sea-orm/sqlx/diesel 均可直接用 SQLite driver；而历史记录查询复杂度低（时间倒序+分页），libsql 手写 SQL 足够，ORM 帮助不大。若未来需对接 Turso 云库/复杂查询，再评估 toasty
-10. **配置用 config-rs 统一管理，采用"内嵌默认值 + 环境变量 + 多路径文件"范式**：`MemorySource::new()`（`include_str!` 编译内嵌 `default.toml`）→ `Environment::default().prefix("XIMED").try_parsing(true)` → `./ximed.toml` → `/app/ximed.toml` → `/etc/ximed/config.toml`（后添加者优先）；`Settings` 结构 + 访问器方法；敏感项（认证密码、存储凭据、TLS 证书）一律 `XIMED_*` 环境变量注入不落盘明文；实测 config 0.15 不引入 openssl/native-tls
+10. **配置用 config-rs 统一管理，采用"内嵌默认值 + 环境变量 + 多路径文件"范式**：`MemorySource::new()`（`include_str!` 编译内嵌 `default.toml`）→ `Environment::default().prefix("XIMED").separator("__").try_parsing(true)` → `./ximed.toml` → `/app/ximed.toml` → `/etc/ximed/config.toml`（后添加者优先）；`Settings` 结构 + 访问器方法；敏感项（认证密码、存储凭据、TLS 证书）一律环境变量注入不落盘明文（认证密码经 `auth.password_env` 指定环境变量名，启动时 `std::env::var` 读取）；实测 config 0.15 不引入 openssl/native-tls

@@ -1,77 +1,7 @@
-use std::path::{Component, Path, PathBuf};
+use std::path::PathBuf;
 
 use async_trait::async_trait;
-
-/// 存储错误。
-#[derive(Debug)]
-pub enum StorageError {
-    /// 非法 key（路径穿越、空 key、绝对路径等）。
-    InvalidKey(String),
-    /// 底层 IO 错误。
-    Io(std::io::Error),
-}
-
-impl std::fmt::Display for StorageError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            StorageError::InvalidKey(key) => write!(f, "invalid storage key: {key}"),
-            StorageError::Io(e) => write!(f, "io error: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for StorageError {}
-
-impl From<std::io::Error> for StorageError {
-    fn from(e: std::io::Error) -> Self {
-        StorageError::Io(e)
-    }
-}
-
-pub type Result<T> = std::result::Result<T, StorageError>;
-
-/// 键值 Blob 存储抽象。所有后端（本地文件 / WebDAV / S3 / Turso）实现同一 trait。
-///
-/// 键空间约定（后端无关）：
-/// ```text
-/// clipboard/current.json   # 当前剪贴板 profile（三通道共享的唯一事实源）
-/// files/{data_name}        # 附件数据（后续图片/文件）
-/// history/{id}.json        # 历史记录（P7）
-/// ```
-#[async_trait]
-pub trait Storage: Send + Sync {
-    /// 写入 key → blob（覆盖）。
-    async fn put(&self, key: &str, data: &[u8]) -> Result<()>;
-    /// 读取 key，不存在返回 None。
-    async fn get(&self, key: &str) -> Result<Option<Vec<u8>>>;
-    /// 删除 key（幂等）。
-    async fn delete(&self, key: &str) -> Result<()>;
-    /// 列出 prefix 下的 key。
-    async fn list(&self, prefix: &str) -> Result<Vec<String>>;
-}
-
-/// 校验 key 合法性：拒绝空 key、绝对路径、`..`/`.` 组件、反斜杠与 NUL 字符。
-pub fn validate_key(key: &str) -> Result<()> {
-    if key.is_empty() {
-        return Err(StorageError::InvalidKey(key.to_string()));
-    }
-    if key.contains('\\') || key.contains('\0') {
-        return Err(StorageError::InvalidKey(key.to_string()));
-    }
-    let path = Path::new(key);
-    if path.is_absolute() {
-        return Err(StorageError::InvalidKey(key.to_string()));
-    }
-    for comp in path.components() {
-        match comp {
-            Component::ParentDir => return Err(StorageError::InvalidKey(key.to_string())),
-            Component::CurDir => return Err(StorageError::InvalidKey(key.to_string())),
-            Component::RootDir => return Err(StorageError::InvalidKey(key.to_string())),
-            _ => {}
-        }
-    }
-    Ok(())
-}
+use domain::storage::{Storage, Result, validate_key};
 
 /// 本地文件系统存储（默认后端）。数据落在 `{data_dir}/{key}`，写入采用原子写（tmp + rename）。
 #[derive(Debug, Clone)]
@@ -145,7 +75,6 @@ impl Storage for LocalStorage {
                     stack.push(path);
                 } else if ft.is_file() {
                     if let Ok(rel) = path.strip_prefix(&self.data_dir) {
-                        // 还原为 "/" 分隔的 key 字符串
                         out.push(rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/"));
                     }
                 }
@@ -191,7 +120,7 @@ mod tests {
         let store = LocalStorage::new(dir.path());
         store.put("a.json", b"x").await.unwrap();
         store.delete("a.json").await.unwrap();
-        store.delete("a.json").await.unwrap(); // 第二次幂等
+        store.delete("a.json").await.unwrap();
         assert_eq!(store.get("a.json").await.unwrap(), None);
     }
 
@@ -227,7 +156,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalStorage::new(dir.path());
         store.put("clipboard/current.json", b"data").await.unwrap();
-        // 目录里不应残留 .tmp 文件
         let entries: Vec<_> = std::fs::read_dir(dir.path().join("clipboard")).unwrap().collect();
         assert_eq!(entries.len(), 1);
         let name = entries[0].as_ref().unwrap().file_name().to_string_lossy().to_string();
@@ -239,16 +167,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalStorage::new(dir.path());
         for bad in ["", "..", "../evil", "a/../../b", "/abs", "a\\b", "a\0b"] {
-            assert!(validate_key(bad).is_err(), "key {bad:?} should be rejected");
             assert!(store.put(bad, b"x").await.is_err(), "put {bad:?} should fail");
             assert!(store.get(bad).await.is_err(), "get {bad:?} should fail");
-        }
-    }
-
-    #[test]
-    fn valid_keys_accepted() {
-        for good in ["clipboard/current.json", "history/1.json", "files/a.txt", "a", "dir/a.b.c", ".hidden"] {
-            assert!(validate_key(good).is_ok(), "key {good:?} should be accepted");
         }
     }
 }

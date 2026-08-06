@@ -40,4 +40,13 @@ toasty 0.9.0 是唯一原生 Turso driver ORM 但 API 不稳定；本地嵌入�
 
 ## 10. 配置用 config-rs，采用"内嵌默认值 + 环境变量 + 多路径文件"范式
 
-`MemorySource::new()`（`include_str!` 内嵌 `default.toml`）→ `Environment::default().prefix("XIMED").try_parsing(true)` → `./ximed.toml` → `/app/ximed.toml` → `/etc/ximed/config.toml`（后添加者优先）；`Settings` 结构 + 访问器方法；敏感项一律 `XIMED_*` 环境变量注入不落盘明文；实测 config 0.15 不引入 openssl/native-tls。
+`MemorySource::new()`（`include_str!` 内嵌 `default.toml`）→ `Environment::default().prefix("XIMED").separator("__").try_parsing(true)`（双下划线嵌套映射，`XIMED__SERVER__ADDR` → `server.addr`）→ `./ximed.toml` → `/app/ximed.toml` → `/etc/ximed/config.toml`（后添加者优先）；`Settings` 结构 + 访问器方法；敏感项（认证密码、存储凭据、TLS 证书）一律环境变量注入不落盘明文，认证密码经 `auth.password_env` 指定环境变量名（默认 `XIMED_AUTH_PASSWORD`）启动时 `std::env::var` 读取；实测 config 0.15 不引入 openssl/native-tls。
+
+## 11. Workspace 按层拆分独立 crate，依赖单向
+
+crates 目录去 `ximed-` 前缀，四层单向依赖 server → service → store → domain：
+- `domain`：领域模型（Profile/hash/protocol）+ Storage trait 抽象，零业务依赖
+- `store`：存储实现（LocalStorage）+ 仓库（ClipboardRepo）+ 后端装配
+- `service`：业务逻辑（ClipboardService：校验/幂等/广播/缓存）+ ClipboardContext
+- `server`：handler 层（axum HTTP/WS）、auth、config、AppState 装配、main
+避免在单个大 crate 中混层，每层可独立测试与复用；domain 命名避开 Rust 内建 `core` 命名冲突。

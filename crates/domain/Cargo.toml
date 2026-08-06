@@ -1,5 +1,5 @@
 [package]
-name = "ximed-core"
+name = "domain"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

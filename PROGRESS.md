@@ -1,38 +1,35 @@
 # PROGRESS
 
-> 更新：2026-08-06 · 阶段：P1 完成（ximed-core）
+> 更新：2026-08-06 · 阶段：P6 + P7 全部完成（未提交）
 
 ## 当前状态
 
-- **P1 已完成**：workspace + ximed-core 全部模块 + 单元测试（23 个全绿）
-- 依赖树无 openssl/openssl-sys/native-tls（`cargo tree -i` 均无结果）
-- `cargo check --workspace` 通过
+- **P6 部署优化完成**：release profile + 交叉编译配置 + systemd + 内存 benchmark
+- **P7 全部完成**：HTTPS / WebDAV / 历史记录 / 图片文件同步
+- **56 个测试全绿**（domain 12 + store 12 + service 19 + server 16）；无 openssl/native-tls/openssl-sys；无编译警告
+- release 二进制 1.5MB，实测内存 1MB（目标 < 20MB）
 
 ## 下一步
 
-1. **P2：服务器骨架**（crates/ximed）
-   - config-rs 配置：default.toml 内嵌 + MemorySource + 环境变量（XIMED_*）+ 多路径文件（./ximed.toml → /app/ximed.toml → /etc/ximed/config.toml）+ Settings 结构 + 访问器
-   - Basic Auth（三通道共用校验逻辑）
-   - 路由：`/healthz` `/api/version` + `/api/clipboard` GET/PUT（轮询通道先可用）
-   - 验收：`cargo test` + curl 全链路 + 配置解析单测
-2. P3：WS 通道；P4：SSE 通道
+1. 代码审查（未提交变更）后提交
+2. P5（Xime 宿主扩展 + 采集插件 + 端到端）待用户确认是否实施
+3. 可选：S3 存储后端（feature，大依赖按需）
 
 ## 已完成
 
-- [x] 技术方案文档定稿 v3（三通道并存：Xime 走 HTTP，WS/SSE 可选）
-- [x] 配置设计采用"内嵌默认值 + 环境变量 + 多路径文件"范式（MemorySource + config-rs）
-- [x] P1 workspace：根 Cargo.toml = 虚拟 workspace（members = ["crates/*"]，workspace.package：version 0.1.0 / edition 2024 / license MIT）
-- [x] P1 hash.rs：`sha256_hex` / `text_hash` / `file_hash`，NIST 向量 + "你好" 向量（670d9743...）+ 通用性断言
-- [x] P1 profile.rs：`Profile`（8 字段全小写）+ `ProfileType`（text/file/image/group/none 小写序列化）+ `from_text`/`empty`/`Default`
-- [x] P1 protocol.rs：`ClientMessage` / `ServerMessage`（serde tag="type"，rename_all snake_case + 显式 rename 处理 auth.ok/auth.error/clipboard.set/get/changed/snapshot）+ `sse_event` 常量
-- [x] P1 storage.rs：`Storage` trait（async_trait，put/get/delete/list）+ `validate_key`（拒绝空/绝对/..//../\\/NUL）+ `LocalStorage`（原子写 tmp+rename，递归 list）
-- [x] 依赖清单：ximed-core = async-trait + serde + serde_json + sha2 + tokio(fs,sync)；dev = tempfile + tokio(rt,macros)
+- [x] P1-P4 + 分层重构（domain/store/service/server 四层单向依赖）
+- [x] **P6 部署优化**：
+  - workspace `[profile.release]`：opt-level=z / lto / codegen-units=1 / strip / panic=abort
+  - `.cargo/config.toml`：交叉编译 alias（build-rpi / build-rpi-armv7）+ musl-gcc linker
+  - `deploy/ximed.service`：systemd（Restart=always、MemoryMax、资源/安全限制、journald）
+  - `deploy/bench_memory.sh`：内存 benchmark（实测 RSS 1MB）
+- [x] **P7a HTTPS**：axum-server + rustls（参考官方 example-tls-rustls），证书/私钥经 `XIMED_TLS_CERT`/`XIMED_TLS_KEY` 环境变量注入（不落盘）；tls.enabled 切换；端到端验证（healthz/PUT/SSE 全走 HTTPS）
+- [x] **P7b WebDAV**：`store` crate webdav feature（reqwest rustls，无 openssl）；`WebDavStorage` 实现 Storage trait（PUT/GET/DELETE/PROPFIND + MKCOL 建目录 + Basic Auth + url 解码）；`BackendKind`/`StorageOptions` 装配
+- [x] **P7c 历史记录**：`store` crate history feature（rusqlite bundled 手写 SQL，决策 9）；`HistoryRepo`（Mutex<Connection> 保证 Send+Sync）；service PUT 时写入；`GET /api/clipboard/history?limit=&before_seq=` 分页倒序；端到端验证（3 条倒序 + 分页 + 401）
+- [x] **P7d 图片/文件同步**：domain `validate_file_name`（防路径穿越）；service `put_file`/`get_file`（files/{name} 键空间）；WS 协议扩展 `file.set`/`file.get` + binary 帧上传（pending_file 状态）；`GET /api/clipboard/file?name=` 下载；端到端验证（WS binary 上传 → 落盘 → HTTP 下载字节一致）
 
 ## 待办（后续功能点）
 
-- [ ] P2 服务器骨架
-- [ ] P3 WS 通道
-- [ ] P4 SSE 通道
-- [ ] P5 Xime 宿主扩展 + 采集插件 + 端到端
-- [ ] P6 部署优化（musl/交叉编译/systemd/内存 benchmark）
-- [ ] P7 WebDAV/S3 后端 + 历史记录 + 图片/文件同步 + HTTPS
+- [ ] 审查未提交变更后 GPG 提交
+- [ ] P5 Xime 宿主扩展 + 采集插件 + 端到端（待确认）
+- [ ] S3 存储后端（按需，大依赖）
