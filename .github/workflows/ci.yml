@@ -1,0 +1,71 @@
+# ximed 每次 push / PR 的代码检查：fmt + clippy（默认与无 UI 精简构建）+ 全量测试（三平台）。
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Format check
+        run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config libx11-dev libxi-dev libxrandr-dev libxcb1-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-cursor-dev \
+            libxkbcommon-dev libwayland-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev
+      - name: Clippy (default features)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Clippy (no default features, minimal server/client build)
+        run: cargo clippy -p app --no-default-features --all-targets --locked -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux desktop build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config libx11-dev libxi-dev libxrandr-dev libxcb1-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-cursor-dev \
+            libxkbcommon-dev libwayland-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev
+      - name: Test (default features)
+        run: cargo test --workspace --all-targets --locked
+      - name: Check no-default-features (minimal server/client build)
+        run: cargo check -p app --no-default-features --locked

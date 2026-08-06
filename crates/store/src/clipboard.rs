@@ -27,8 +27,8 @@ impl ClipboardRepo {
 
     /// 覆盖写入当前剪贴板 profile（原子写由后端保证）。
     pub async fn save_current(&self, profile: &Profile) -> Result<(), StorageError> {
-        let bytes = serde_json::to_vec(profile)
-            .map_err(|e| StorageError::Io(std::io::Error::other(e)))?;
+        let bytes =
+            serde_json::to_vec(profile).map_err(|e| StorageError::Io(std::io::Error::other(e)))?;
         self.store.put(CURRENT_KEY, &bytes).await
     }
 }
@@ -40,7 +40,8 @@ mod tests {
 
     #[tokio::test]
     async fn repo_roundtrip() {
-        let store: Arc<dyn Storage> = Arc::new(LocalStorage::new(tempfile::tempdir().unwrap().path()));
+        let store: Arc<dyn Storage> =
+            Arc::new(LocalStorage::new(tempfile::tempdir().unwrap().path()));
         let repo = ClipboardRepo::new(store.clone());
 
         // 初始无数据
@@ -56,7 +57,8 @@ mod tests {
 
     #[tokio::test]
     async fn repo_corrupted_file_returns_none() {
-        let store: Arc<dyn Storage> = Arc::new(LocalStorage::new(tempfile::tempdir().unwrap().path()));
+        let store: Arc<dyn Storage> =
+            Arc::new(LocalStorage::new(tempfile::tempdir().unwrap().path()));
         store.put(CURRENT_KEY, b"not-json{{").await.unwrap();
         let repo = ClipboardRepo::new(store);
         assert_eq!(repo.get_current().await, None);

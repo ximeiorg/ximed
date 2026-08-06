@@ -49,8 +49,15 @@ mod tests {
 
     #[test]
     fn sha256_hex_is_lowercase() {
-        assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
-        assert!(sha256_hex(b"abc").chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert!(
+            sha256_hex(b"abc")
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        );
     }
 
     #[test]

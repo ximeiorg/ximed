@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use domain::storage::{Storage, StorageError, Result};
+use domain::storage::{Result, Storage, StorageError};
 
 /// WebDAV 存储后端（feature = webdav 启用）。
 ///
@@ -18,11 +18,7 @@ pub struct WebDavStorage {
 }
 
 impl WebDavStorage {
-    pub fn new(
-        base_url: String,
-        username: Option<String>,
-        password: Option<String>,
-    ) -> Self {
+    pub fn new(base_url: String, username: Option<String>, password: Option<String>) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             username,
@@ -63,12 +59,18 @@ impl WebDavStorage {
         for d in dirs.into_iter().rev() {
             let url = self.url(&d);
             let resp = self
-                .auth(self.client.request(reqwest::Method::from_bytes(b"MKCOL").unwrap(), &url))
+                .auth(
+                    self.client
+                        .request(reqwest::Method::from_bytes(b"MKCOL").unwrap(), &url),
+                )
                 .send()
                 .await
                 .map_err(|e| StorageError::Io(std::io::Error::other(e)))?;
             // 409 = 已存在，405 = 父目录不存在（递归已保证）；两者均视为可继续
-            if !resp.status().is_success() && resp.status() != reqwest::StatusCode::CONFLICT && resp.status() != reqwest::StatusCode::METHOD_NOT_ALLOWED {
+            if !resp.status().is_success()
+                && resp.status() != reqwest::StatusCode::CONFLICT
+                && resp.status() != reqwest::StatusCode::METHOD_NOT_ALLOWED
+            {
                 return Err(StorageError::Io(std::io::Error::other(format!(
                     "MKCOL {url} failed: {}",
                     resp.status()
@@ -93,7 +95,10 @@ impl Storage for WebDavStorage {
         if resp.status().is_success() {
             Ok(())
         } else {
-            Err(StorageError::Io(std::io::Error::other(format!("PUT failed: {}", resp.status()))))
+            Err(StorageError::Io(std::io::Error::other(format!(
+                "PUT failed: {}",
+                resp.status()
+            ))))
         }
     }
 
@@ -108,10 +113,16 @@ impl Storage for WebDavStorage {
             return Ok(None);
         }
         if resp.status().is_success() {
-            let bytes = resp.bytes().await.map_err(|e| StorageError::Io(std::io::Error::other(e)))?;
+            let bytes = resp
+                .bytes()
+                .await
+                .map_err(|e| StorageError::Io(std::io::Error::other(e)))?;
             Ok(Some(bytes.to_vec()))
         } else {
-            Err(StorageError::Io(std::io::Error::other(format!("GET failed: {}", resp.status()))))
+            Err(StorageError::Io(std::io::Error::other(format!(
+                "GET failed: {}",
+                resp.status()
+            ))))
         }
     }
 
@@ -126,7 +137,10 @@ impl Storage for WebDavStorage {
         if resp.status().is_success() || resp.status() == reqwest::StatusCode::NOT_FOUND {
             Ok(())
         } else {
-            Err(StorageError::Io(std::io::Error::other(format!("DELETE failed: {}", resp.status()))))
+            Err(StorageError::Io(std::io::Error::other(format!(
+                "DELETE failed: {}",
+                resp.status()
+            ))))
         }
     }
 
@@ -138,7 +152,11 @@ impl Storage for WebDavStorage {
             self.url(prefix)
         };
         let resp = self
-            .auth(self.client.request(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), &url).header("Depth", "1"))
+            .auth(
+                self.client
+                    .request(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), &url)
+                    .header("Depth", "1"),
+            )
             .send()
             .await
             .map_err(|e| StorageError::Io(std::io::Error::other(e)))?;
@@ -146,7 +164,10 @@ impl Storage for WebDavStorage {
             return Ok(Vec::new());
         }
         if resp.status().is_success() || resp.status() == reqwest::StatusCode::MULTI_STATUS {
-            let body = resp.text().await.map_err(|e| StorageError::Io(std::io::Error::other(e)))?;
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| StorageError::Io(std::io::Error::other(e)))?;
             // 从 <d:href> 提取资源路径，过滤目录（以 / 结尾），还原为 key
             let mut out = Vec::new();
             for cap in body.match_indices("<d:href>") {
@@ -166,7 +187,10 @@ impl Storage for WebDavStorage {
             out.sort();
             Ok(out)
         } else {
-            Err(StorageError::Io(std::io::Error::other(format!("PROPFIND failed: {}", resp.status()))))
+            Err(StorageError::Io(std::io::Error::other(format!(
+                "PROPFIND failed: {}",
+                resp.status()
+            ))))
         }
     }
 }
@@ -197,7 +221,10 @@ mod tests {
 
     #[test]
     fn url_decode_handles_percent() {
-        assert_eq!(urlencoding_decode("clipboard%2Fcurrent.json"), "clipboard/current.json");
+        assert_eq!(
+            urlencoding_decode("clipboard%2Fcurrent.json"),
+            "clipboard/current.json"
+        );
         assert_eq!(urlencoding_decode("a%20b.txt"), "a b.txt");
         assert_eq!(urlencoding_decode("plain"), "plain");
         assert_eq!(urlencoding_decode("100%25"), "100%");
@@ -222,4 +249,3 @@ mod tests {
         assert_eq!(s.parent_dir("root.json"), "");
     }
 }
-

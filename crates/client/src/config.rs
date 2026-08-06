@@ -108,11 +108,21 @@ impl ClientConfig {
     }
 }
 
-fn default_password_env() -> String { "XIMED_CLIENT_PASSWORD".to_string() }
-fn default_source() -> String { hostname().unwrap_or_else(|| "client".to_string()) }
-fn default_poll_ms() -> u64 { 500 }
-fn default_heartbeat_secs() -> u64 { 30 }
-fn default_true() -> bool { true }
+fn default_password_env() -> String {
+    "XIMED_CLIENT_PASSWORD".to_string()
+}
+fn default_source() -> String {
+    hostname().unwrap_or_else(|| "client".to_string())
+}
+fn default_poll_ms() -> u64 {
+    500
+}
+fn default_heartbeat_secs() -> u64 {
+    30
+}
+fn default_true() -> bool {
+    true
+}
 
 /// 本机主机名（来源标识）。
 pub fn hostname() -> Option<String> {
@@ -139,7 +149,10 @@ mod tests {
         assert_eq!(cfg.ws_url(), "ws://127.0.0.1:8443/sync");
         assert_eq!(cfg.http_api(), "http://127.0.0.1:8443/api/clipboard");
 
-        let tls = ClientConfig { server_url: "https://example.com".to_string(), ..cfg };
+        let tls = ClientConfig {
+            server_url: "https://example.com".to_string(),
+            ..cfg
+        };
         assert_eq!(tls.ws_url(), "wss://example.com/sync");
         assert_eq!(tls.http_api(), "https://example.com/api/clipboard");
     }

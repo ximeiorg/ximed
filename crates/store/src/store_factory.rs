@@ -16,7 +16,7 @@ pub enum BackendKind {
 
 impl BackendKind {
     /// 从配置字符串解析后端类型，未知值回退 local。
-    pub fn from_str(name: &str) -> Self {
+    pub fn from_name(name: &str) -> Self {
         match name {
             #[cfg(feature = "webdav")]
             "webdav" => BackendKind::WebDav,
@@ -79,12 +79,12 @@ mod tests {
 
     #[test]
     fn backend_kind_parse() {
-        assert_eq!(BackendKind::from_str("local"), BackendKind::Local);
-        assert_eq!(BackendKind::from_str("unknown"), BackendKind::Local);
+        assert_eq!(BackendKind::from_name("local"), BackendKind::Local);
+        assert_eq!(BackendKind::from_name("unknown"), BackendKind::Local);
         assert_eq!(BackendKind::Local.as_str(), "local");
         #[cfg(feature = "webdav")]
         {
-            assert_eq!(BackendKind::from_str("webdav"), BackendKind::WebDav);
+            assert_eq!(BackendKind::from_name("webdav"), BackendKind::WebDav);
             assert_eq!(BackendKind::WebDav.as_str(), "webdav");
         }
     }

@@ -1,12 +1,12 @@
 use std::time::Duration;
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
+use domain::protocol::{ClientMessage, ServerMessage};
 use futures_util::{SinkExt, StreamExt};
 use service::{ClipboardService, PutOutcome};
-use domain::protocol::{ClientMessage, ServerMessage};
 
 use crate::auth::check_basic_auth;
 use crate::state::SharedState;
@@ -152,14 +152,13 @@ async fn handle_client_message(
         }
         Message::Binary(data) => {
             // 附件数据帧：落在 pending_file 声明过的文件名下
-            if let Some(name) = pending_file.take() {
-                if ClipboardService
+            if let Some(name) = pending_file.take()
+                && ClipboardService
                     .put_file(&state.clipboard, &name, &data)
                     .await
                     .is_err()
-                {
-                    return false; // 存储失败断开
-                }
+            {
+                return false; // 存储失败断开
             }
             true
         }
@@ -183,10 +182,10 @@ where
 mod tests {
     use super::*;
     use base64::Engine;
-    use std::sync::Arc;
-    use tokio::net::TcpListener;
     use domain::profile::Profile;
     use domain::storage::Storage;
+    use std::sync::Arc;
+    use tokio::net::TcpListener;
 
     use crate::config::{AuthConfig, ClipboardConfig, SseConfig};
     use crate::state::AppState;
@@ -194,7 +193,8 @@ mod tests {
     use store::local::LocalStorage;
 
     async fn test_state() -> Arc<AppState> {
-        let store: Arc<dyn Storage> = Arc::new(LocalStorage::new(tempfile::tempdir().unwrap().path()));
+        let store: Arc<dyn Storage> =
+            Arc::new(LocalStorage::new(tempfile::tempdir().unwrap().path()));
         let auth = AuthConfig {
             username: "alice".to_string(),
             password: None,
@@ -236,22 +236,31 @@ mod tests {
         format!("ws://{addr}/sync")
     }
 
-    type WsStream = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+    type WsStream = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
 
-    async fn connect(url: &str, auth: &str) -> Result<WsStream, tokio_tungstenite::tungstenite::Error> {
-        let mut request = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(url).unwrap();
-        request.headers_mut().insert(
-            axum::http::header::AUTHORIZATION,
-            auth.parse().unwrap(),
-        );
+    async fn connect(
+        url: &str,
+        auth: &str,
+    ) -> Result<WsStream, tokio_tungstenite::tungstenite::Error> {
+        let mut request =
+            tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(url)
+                .unwrap();
+        request
+            .headers_mut()
+            .insert(axum::http::header::AUTHORIZATION, auth.parse().unwrap());
         let (ws, _) = tokio_tungstenite::connect_async(request).await?;
         Ok(ws)
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // env_lock 需覆盖整个测试生命周期，防止 env 读写竞争
     async fn ws_auth_required() {
         let _g = crate::config::env_lock();
-        unsafe { std::env::set_var("XIMED_AUTH_PASSWORD", "s3cret"); }
+        unsafe {
+            std::env::set_var("XIMED_AUTH_PASSWORD", "s3cret");
+        }
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let app = axum::Router::new()
@@ -265,20 +274,29 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // env_lock 需覆盖整个测试生命周期
     async fn ws_bad_password_rejected() {
         let _g = crate::config::env_lock();
-        unsafe { std::env::set_var("XIMED_AUTH_PASSWORD", "s3cret"); }
+        unsafe {
+            std::env::set_var("XIMED_AUTH_PASSWORD", "s3cret");
+        }
         let state = test_state().await;
         let url = spawn_server(state).await;
-        let bad = format!("Basic {}", base64::engine::general_purpose::STANDARD.encode("alice:wrong"));
+        let bad = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode("alice:wrong")
+        );
         let res = connect(&url, &bad).await;
         assert!(res.is_err(), "wrong password must fail the ws handshake");
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // env_lock 需覆盖整个测试生命周期
     async fn ws_auth_ok_and_broadcast() {
         let _g = crate::config::env_lock();
-        unsafe { std::env::set_var("XIMED_AUTH_PASSWORD", "s3cret"); }
+        unsafe {
+            std::env::set_var("XIMED_AUTH_PASSWORD", "s3cret");
+        }
         let state = test_state().await;
         let url = spawn_server(state.clone()).await;
         let auth = auth_header();
@@ -293,14 +311,22 @@ mod tests {
 
         // A 发 clipboard.get → snapshot
         use tokio_tungstenite::tungstenite::Message as WsMessage;
-        ws_a.send(WsMessage::Text(r#"{"type":"clipboard.get"}"#.into())).await.unwrap();
+        ws_a.send(WsMessage::Text(r#"{"type":"clipboard.get"}"#.into()))
+            .await
+            .unwrap();
         let snap = ws_a.next().await.unwrap().unwrap();
-        assert!(snap.to_text().unwrap().contains("\"type\":\"clipboard.snapshot\""));
+        assert!(
+            snap.to_text()
+                .unwrap()
+                .contains("\"type\":\"clipboard.snapshot\"")
+        );
 
         // A 发 clipboard.set → B 收到 clipboard.changed
         let profile = Profile::from_text("ws广播测试", Some("ws-a".to_string()));
         let set_msg = serde_json::json!({ "type": "clipboard.set", "data": profile });
-        ws_a.send(WsMessage::Text(set_msg.to_string().into())).await.unwrap();
+        ws_a.send(WsMessage::Text(set_msg.to_string()))
+            .await
+            .unwrap();
 
         let changed = ws_b.next().await.unwrap().unwrap();
         let text = changed.to_text().unwrap();
@@ -313,7 +339,9 @@ mod tests {
         assert!(changed_a.to_text().unwrap().contains("ws广播测试"));
 
         // B 幂等：再次 set 相同 hash，两端都不应再收到 changed（服务端不广播）
-        ws_b.send(WsMessage::Text(set_msg.to_string().into())).await.unwrap();
+        ws_b.send(WsMessage::Text(set_msg.to_string()))
+            .await
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
         let extra_a = tokio::time::timeout(Duration::from_millis(300), ws_a.next()).await;
         let extra_b = tokio::time::timeout(Duration::from_millis(300), ws_b.next()).await;

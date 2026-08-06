@@ -16,6 +16,7 @@
   - Windows exe 图标：`assets/icon.ico`（多尺寸）+ build.rs/embed-resource 嵌入 PE 资源
   - `.github/workflows/nightly.yml`：每日 02:00 UTC + 手动；产物文件名带构建日期；`publish=nightly` 删除旧并重建**滚动 nightly release**（始终一个，含最新全部包）
   - `.github/workflows/release.yml`：v* tag 触发，`publish=tag` 发布版本 GitHub Release
+  - `.github/workflows/ci.yml`：每次 push/PR 检查（fmt + clippy -D warnings 默认与无默认 feature + 三平台全量测试）
 - **UI 左右分栏**（iced）：左侧导航（状态/剪贴板历史）+ 右侧内容面板
   - 状态面板：server / engine / 设备状态 + **本地服务器控制区**（仅 desktop 显示：开启/重启/关闭 + 打开配置文件所在目录）
   - 历史面板：后台线程周期拉取 `/api/clipboard/history`（3s）显示剪贴板历史列表
@@ -51,6 +52,10 @@
   - **cargo-packager 配置**：`[package.metadata.packager]`（deb/nsis 配置），CI 里 `cargo packager --target <triple> --formats <f>` 出 NSIS/deb/AppImage/dmg；`cargo install cargo-packager --locked`
   - **三个 workflow**：`build-packages.yml`（workflow_call 矩阵）/ `nightly.yml`（schedule+manual，产物带日期）/ `release.yml`（v* tag → GitHub Release）
   - 本地已验证：`cargo packager --formats nsis` 产出 `ximed-desktop_0.1.0_x64-setup.exe`；exe 图标资源嵌入确认
+- [x] **CI 检查（本次）**：
+  - 全仓 `cargo fmt --all` 统一格式（含 CRLF/LF 行尾）
+  - 修复 clippy -D warnings 告警：let-chain 折叠嵌套 if（store/local、http、ws、desktop）、`BackendKind::from_str`→`from_name`（避免与 std FromStr 混淆）、无用 `.into()`、`MockClipboard` 补 Default、`SyncMode` derive Default、`if let`/`if` 替换单分支 match、`await_holding_lock`（测试 env_lock 场景 allow）
+  - 75 个测试全绿；`cargo check -p app --no-default-features` 通过
 - [x] P6 部署优化 / P7a HTTPS / P7b WebDAV / P7c 历史记录 / P7d 文件同步
 
 ## 待办（后续功能点）

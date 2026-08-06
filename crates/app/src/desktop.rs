@@ -22,9 +22,7 @@ use client::sync::{SyncEngine, SyncStatus};
 use client::transport::HttpTransport;
 
 use crate::settings::{AppSettings, SyncMode};
-use crate::ui::{
-    run_ui, ui_channel, ui_cmd_channel, UiCmd, UiMsg, UiSender,
-};
+use crate::ui::{UiCmd, UiMsg, UiSender, run_ui, ui_channel, ui_cmd_channel};
 
 /// 启动 desktop 形态：阻塞直到进程结束。
 pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -43,7 +41,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if !app_settings.remote_username.is_empty() {
             client_cfg.username = app_settings.remote_username.clone();
         }
-        if let Some(pw) = app_settings.remote_password.as_ref().filter(|p| !p.is_empty()) {
+        if let Some(pw) = app_settings
+            .remote_password
+            .as_ref()
+            .filter(|p| !p.is_empty())
+        {
             client_cfg.password = Some(pw.clone());
         }
     } else {
@@ -80,12 +82,22 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 return;
             }
         };
-        rt.block_on(desktop_control_loop(cmd_rx, settings, server_pw, client_cfg, tx));
+        rt.block_on(desktop_control_loop(
+            cmd_rx, settings, server_pw, client_cfg, tx,
+        ));
     });
 
     // 主线程：iced 窗口（阻塞直到关闭）
-    run_ui(ui_cfg, app_settings, ui_tx, ui_cmd_tx, rx, local_server, config_dir)
-        .map_err(|e| e.into())
+    run_ui(
+        ui_cfg,
+        app_settings,
+        ui_tx,
+        ui_cmd_tx,
+        rx,
+        local_server,
+        config_dir,
+    )
+    .map_err(|e| e.into())
 }
 
 /// 配置文件所在目录：优先当前工作目录（ximed.toml 所在），不存在则回退 data_dir。
@@ -133,7 +145,13 @@ async fn desktop_control_loop(
     let mut engine_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut history_task: Option<tokio::task::JoinHandle<()>> = None;
 
-    spawn_client_services(&mut engine_task, &mut history_task, &client_cfg, &server_pw, &tx);
+    spawn_client_services(
+        &mut engine_task,
+        &mut history_task,
+        &client_cfg,
+        &server_pw,
+        &tx,
+    );
 
     // 打开配置文件所在目录（macOS `open`，Linux `xdg-open`）
     let open_dir = || {
@@ -205,7 +223,12 @@ async fn desktop_control_loop(
                 UiCmd::OpenConfigDir => {
                     open_dir();
                 }
-                UiCmd::ApplySettings { mode, remote_url, remote_username, remote_password } => {
+                UiCmd::ApplySettings {
+                    mode,
+                    remote_url,
+                    remote_username,
+                    remote_password,
+                } => {
                     let app_settings = AppSettings {
                         mode,
                         remote_url: remote_url.clone(),
@@ -248,18 +271,24 @@ async fn desktop_control_loop(
                     }
                     // 用新配置重建 client 引擎 + 历史轮询
                     stop_client_services(&mut engine_task, &mut history_task);
-                    spawn_client_services(&mut engine_task, &mut history_task, &client_cfg, &server_pw, &tx);
+                    spawn_client_services(
+                        &mut engine_task,
+                        &mut history_task,
+                        &client_cfg,
+                        &server_pw,
+                        &tx,
+                    );
                     let _ = tx.send(UiMsg::SettingsApplied);
                 }
             }
         }
         // server 任务异常退出时同步 UI 状态（如端口被占用）
-        if let Some(task) = server_task.as_mut() {
-            if task.is_finished() {
-                let _ = tx.send(UiMsg::ServerStopped { addr: addr.clone() });
-                server_task = None;
-                shutdown_tx = None;
-            }
+        if let Some(task) = server_task.as_mut()
+            && task.is_finished()
+        {
+            let _ = tx.send(UiMsg::ServerStopped { addr: addr.clone() });
+            server_task = None;
+            shutdown_tx = None;
         }
     }
 }
@@ -286,7 +315,9 @@ fn spawn_client_services(
     }));
     let tx_engine = tx.clone();
     let source = cfg.source.clone();
-    let _ = tx_engine.send(UiMsg::EngineStarted { source: source.clone() });
+    let _ = tx_engine.send(UiMsg::EngineStarted {
+        source: source.clone(),
+    });
     *engine_task = Some(tokio::spawn(async move {
         engine.run().await;
         let _ = tx_engine.send(UiMsg::EngineStopped { source });

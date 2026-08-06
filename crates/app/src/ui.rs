@@ -18,9 +18,7 @@
 
 use client::config::ClientConfig;
 use client::history::HistoryItem;
-use iced::widget::{
-    button, column, container, rule, row, scrollable, text, Radio, TextInput,
-};
+use iced::widget::{Radio, TextInput, button, column, container, row, rule, scrollable, text};
 use iced::{
     Alignment, Background, Border, Color, Element, Length, Subscription, Task, Theme, border,
 };
@@ -223,25 +221,18 @@ pub fn run_ui(
     // 窗口图标：编译期嵌入 PNG（512×512 RGBA），解码失败视为程序 bug。
     let icon = iced::window::icon::from_file_data(include_bytes!("../assets/icon.png"), None)
         .expect("embedded window icon must decode");
-    iced::application(
-        move || (state.clone(), Task::none()),
-        update,
-        view,
-    )
-    .title("ximed")
-    .window(iced::window::Settings {
-        icon: Some(icon),
-        ..Default::default()
-    })
-    .exit_on_close_request(false)
-    .subscription(move |_state| {
-        Subscription::batch([
-            backend_events(rx.clone()),
-            window_events(),
-        ])
-    })
-    .theme(theme)
-    .run()
+    iced::application(move || (state.clone(), Task::none()), update, view)
+        .title("ximed")
+        .window(iced::window::Settings {
+            icon: Some(icon),
+            ..Default::default()
+        })
+        .exit_on_close_request(false)
+        .subscription(move |_state| {
+            Subscription::batch([backend_events(rx.clone()), window_events()])
+        })
+        .theme(theme)
+        .run()
 }
 
 /// 窗口事件订阅：记录窗口 id（打开时）、拦截关闭请求（隐藏到托盘）。
@@ -507,11 +498,8 @@ fn stop_button(theme: &Theme, status: button::Status) -> button::Style {
         },
         ..button::Style::default()
     };
-    match status {
-        button::Status::Hovered => {
-            style.background = Some(Background::Color(Color::from_rgb8(0xff, 0x8f, 0xa3)));
-        }
-        _ => {}
+    if status == button::Status::Hovered {
+        style.background = Some(Background::Color(Color::from_rgb8(0xff, 0x8f, 0xa3)));
     }
     style
 }
@@ -561,7 +549,10 @@ fn danger_button(theme: &Theme, status: button::Status) -> button::Style {
 fn view(state: &UiState) -> Element<'_, Message> {
     // 左分栏：面板导航
     let mut nav = column![
-        text("ximed").size(20).color(TEXT_MAIN).font(iced::Font::DEFAULT),
+        text("ximed")
+            .size(20)
+            .color(TEXT_MAIN)
+            .font(iced::Font::DEFAULT),
         text("剪贴板同步").size(11).color(TEXT_MUTED),
         rule::horizontal(1),
         nav_button("状态", Panel::Status, state.panel),
@@ -600,10 +591,7 @@ fn view(state: &UiState) -> Element<'_, Message> {
         .padding(16)
         .style(card);
 
-    row![sidebar, content]
-        .spacing(12)
-        .padding(12)
-        .into()
+    row![sidebar, content].spacing(12).padding(12).into()
 }
 
 fn nav_button(label: &str, panel: Panel, active: Panel) -> Element<'_, Message> {
@@ -715,11 +703,24 @@ fn server_controls(state: &UiState) -> Element<'static, Message> {
     let mut btns = row![].spacing(8).align_y(Alignment::Center);
     if state.server_running {
         btns = btns.push(
-            button("重启").on_press(Message::ServerRestart).padding(10).style(secondary_button),
+            button("重启")
+                .on_press(Message::ServerRestart)
+                .padding(10)
+                .style(secondary_button),
         );
-        btns = btns.push(button("关闭").on_press(Message::ServerStop).padding(10).style(stop_button));
+        btns = btns.push(
+            button("关闭")
+                .on_press(Message::ServerStop)
+                .padding(10)
+                .style(stop_button),
+        );
     } else {
-        btns = btns.push(button("开启").on_press(Message::ServerStart).padding(10).style(primary_button));
+        btns = btns.push(
+            button("开启")
+                .on_press(Message::ServerStart)
+                .padding(10)
+                .style(primary_button),
+        );
     }
 
     container(
@@ -753,7 +754,10 @@ fn stat_row(
 ) -> Element<'static, Message> {
     let mut content = row![
         stat_dot(ok),
-        text(label).size(14).color(TEXT_MUTED).width(Length::Fixed(80.0)),
+        text(label)
+            .size(14)
+            .color(TEXT_MUTED)
+            .width(Length::Fixed(80.0)),
         text(value).size(14).color(TEXT_MAIN),
     ]
     .spacing(4)
@@ -784,10 +788,22 @@ fn stat_dot(ok: bool) -> Element<'static, Message> {
 
 fn history_view(state: &UiState) -> Element<'_, Message> {
     let header = row![
-        text("seq").size(12).color(TEXT_MUTED).width(Length::Fixed(48.0)),
-        text("type").size(12).color(TEXT_MUTED).width(Length::Fixed(72.0)),
-        text("source").size(12).color(TEXT_MUTED).width(Length::Fixed(96.0)),
-        text("content").size(12).color(TEXT_MUTED).width(Length::Fill),
+        text("seq")
+            .size(12)
+            .color(TEXT_MUTED)
+            .width(Length::Fixed(48.0)),
+        text("type")
+            .size(12)
+            .color(TEXT_MUTED)
+            .width(Length::Fixed(72.0)),
+        text("source")
+            .size(12)
+            .color(TEXT_MUTED)
+            .width(Length::Fixed(96.0)),
+        text("content")
+            .size(12)
+            .color(TEXT_MUTED)
+            .width(Length::Fill),
     ]
     .spacing(8)
     .padding(4);
@@ -818,7 +834,10 @@ fn history_view(state: &UiState) -> Element<'_, Message> {
                     .size(13)
                     .color(TEXT_MUTED)
                     .width(Length::Fixed(48.0)),
-                text(&item.kind).size(13).color(TEXT_MAIN).width(Length::Fixed(72.0)),
+                text(&item.kind)
+                    .size(13)
+                    .color(TEXT_MAIN)
+                    .width(Length::Fixed(72.0)),
                 text(item.source.as_deref().unwrap_or("-"))
                     .size(13)
                     .color(TEXT_MAIN)
@@ -828,17 +847,18 @@ fn history_view(state: &UiState) -> Element<'_, Message> {
             .spacing(8)
             .padding(6);
 
-            let card_row = container(row_item)
-                .width(Length::Fill)
-                .style(move |_| container::Style {
-                    background: Some(Background::Color(SURFACE_ALT)),
-                    border: Border {
-                        color: BORDER,
-                        width: 1.0,
-                        radius: border::radius(10.0),
-                    },
-                    ..container::Style::default()
-                });
+            let card_row =
+                container(row_item)
+                    .width(Length::Fill)
+                    .style(move |_| container::Style {
+                        background: Some(Background::Color(SURFACE_ALT)),
+                        border: Border {
+                            color: BORDER,
+                            width: 1.0,
+                            radius: border::radius(10.0),
+                        },
+                        ..container::Style::default()
+                    });
             rows = rows.push(card_row);
         }
     }
@@ -850,8 +870,18 @@ fn history_view(state: &UiState) -> Element<'_, Message> {
 
 /// 设置面板：连接模式（本地 / 远程 server）+ 远程服务器表单 + 保存。
 fn settings_view(state: &UiState) -> Element<'_, Message> {
-    let mode_local = Radio::new("本地服务器", SyncMode::Local, Some(state.sync_mode), Message::SettingsMode);
-    let mode_remote = Radio::new("远程服务器", SyncMode::Remote, Some(state.sync_mode), Message::SettingsMode);
+    let mode_local = Radio::new(
+        "本地服务器",
+        SyncMode::Local,
+        Some(state.sync_mode),
+        Message::SettingsMode,
+    );
+    let mode_remote = Radio::new(
+        "远程服务器",
+        SyncMode::Remote,
+        Some(state.sync_mode),
+        Message::SettingsMode,
+    );
 
     let hint = match state.sync_mode {
         SyncMode::Local => text("client 自动连接本机 server，地址/端口跟随 server 配置。")
@@ -879,8 +909,7 @@ fn settings_view(state: &UiState) -> Element<'_, Message> {
                 TextInput::new("https://example.com:8443", &state.remote_url)
                     .on_input(Message::SettingsUrl),
                 text("用户名").size(12).color(TEXT_MUTED),
-                TextInput::new("alice", &state.remote_username)
-                    .on_input(Message::SettingsUsername),
+                TextInput::new("alice", &state.remote_username).on_input(Message::SettingsUsername),
                 text("密码").size(12).color(TEXT_MUTED),
                 TextInput::new("", &state.remote_password)
                     .secure(true)
@@ -922,27 +951,26 @@ impl PartialEq for RxId {
 impl Eq for RxId {}
 
 /// 订阅后台事件 channel：轮询接收端，取到事件即产出 Message。
-fn backend_events(rx: std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<UiMsg>>>) -> Subscription<Message> {
+fn backend_events(
+    rx: std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<UiMsg>>>,
+) -> Subscription<Message> {
     use iced::futures::channel::mpsc as fmpsc;
     Subscription::run_with(RxId(rx), |rx| {
         let rx = rx.clone();
-        iced::stream::channel(
-            64,
-            move |mut tx: fmpsc::Sender<Message>| async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
-                loop {
-                    interval.tick().await;
-                    let msg = rx.0.lock().ok().and_then(|g| g.try_recv().ok());
-                    match msg {
-                        Some(msg) => {
-                            if tx.try_send(Message::Backend(msg)).is_err() {
-                                break;
-                            }
+        iced::stream::channel(64, move |mut tx: fmpsc::Sender<Message>| async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+            loop {
+                interval.tick().await;
+                let msg = rx.0.lock().ok().and_then(|g| g.try_recv().ok());
+                match msg {
+                    Some(msg) => {
+                        if tx.try_send(Message::Backend(msg)).is_err() {
+                            break;
                         }
-                        None => continue,
                     }
+                    None => continue,
                 }
-            },
-        )
+            }
+        })
     })
 }

@@ -78,9 +78,18 @@ pub struct MockClipboard {
 }
 
 #[cfg(test)]
+impl Default for MockClipboard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
 impl MockClipboard {
     pub fn new() -> Self {
-        Self { text: std::sync::Mutex::new(None) }
+        Self {
+            text: std::sync::Mutex::new(None),
+        }
     }
 
     /// 模拟用户在系统层面复制（外部写入，非自写）。

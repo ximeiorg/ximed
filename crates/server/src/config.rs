@@ -67,27 +67,46 @@ pub struct Settings {
 impl Settings {
     pub fn new() -> Result<Self, ConfigError> {
         let s = Config::builder()
-            .add_source(MemorySource::new())             // 1. 内嵌默认值
+            .add_source(MemorySource::new()) // 1. 内嵌默认值
             .add_source(
                 // XIMED_SERVER__ADDR 双下划线嵌套映射 → server.addr
-                Environment::default().prefix("XIMED").separator("__").try_parsing(true),
+                Environment::default()
+                    .prefix("XIMED")
+                    .separator("__")
+                    .try_parsing(true),
             )
-            .add_source(config::File::with_name("ximed.toml").required(false))        // 3. 当前目录
-            .add_source(config::File::with_name("/app/ximed.toml").required(false))   // 4. /app
+            .add_source(config::File::with_name("ximed.toml").required(false)) // 3. 当前目录
+            .add_source(config::File::with_name("/app/ximed.toml").required(false)) // 4. /app
             .add_source(config::File::with_name("/etc/ximed/config.toml").required(false)) // 5. /etc
             .build()?;
         s.try_deserialize()
     }
 
     // 访问器（供各处安全取值）
-    pub fn server(&self) -> &ServerConfig { &self.server }
-    pub fn auth(&self) -> &AuthConfig { &self.auth }
-    pub fn clipboard(&self) -> &ClipboardConfig { &self.clipboard }
-    pub fn http(&self) -> &HttpConfig { &self.http }
-    pub fn ws(&self) -> &WsConfig { &self.ws }
-    pub fn sse(&self) -> &SseConfig { &self.sse }
-    pub fn storage(&self) -> &StorageConfig { &self.storage }
-    pub fn tls(&self) -> &TlsConfig { &self.tls }
+    pub fn server(&self) -> &ServerConfig {
+        &self.server
+    }
+    pub fn auth(&self) -> &AuthConfig {
+        &self.auth
+    }
+    pub fn clipboard(&self) -> &ClipboardConfig {
+        &self.clipboard
+    }
+    pub fn http(&self) -> &HttpConfig {
+        &self.http
+    }
+    pub fn ws(&self) -> &WsConfig {
+        &self.ws
+    }
+    pub fn sse(&self) -> &SseConfig {
+        &self.sse
+    }
+    pub fn storage(&self) -> &StorageConfig {
+        &self.storage
+    }
+    pub fn tls(&self) -> &TlsConfig {
+        &self.tls
+    }
 }
 
 impl Default for Settings {
@@ -203,19 +222,45 @@ pub struct TlsConfig {
 }
 
 /// 默认值函数（serde default 使用）
-fn default_true() -> bool { true }
-fn default_addr() -> String { "0.0.0.0:8443".to_string() }
-fn default_data_dir() -> String { "./data".to_string() }
-fn default_log_level() -> String { "info".to_string() }
-fn default_username() -> String { "alice".to_string() }
-fn default_password_env() -> String { "XIMED_AUTH_PASSWORD".to_string() }
-fn default_max_connections() -> usize { 32 }
-fn default_max_frame_size() -> usize { 1024 * 1024 }
-fn default_idle_timeout_secs() -> u64 { 60 }
-fn default_heartbeat_interval_secs() -> u64 { 30 }
-fn default_bind_timeout_ms() -> u64 { 5000 }
-fn default_sse_heartbeat_ms() -> u64 { 15_000 }
-fn default_backend() -> String { "local".to_string() }
+fn default_true() -> bool {
+    true
+}
+fn default_addr() -> String {
+    "0.0.0.0:8443".to_string()
+}
+fn default_data_dir() -> String {
+    "./data".to_string()
+}
+fn default_log_level() -> String {
+    "info".to_string()
+}
+fn default_username() -> String {
+    "alice".to_string()
+}
+fn default_password_env() -> String {
+    "XIMED_AUTH_PASSWORD".to_string()
+}
+fn default_max_connections() -> usize {
+    32
+}
+fn default_max_frame_size() -> usize {
+    1024 * 1024
+}
+fn default_idle_timeout_secs() -> u64 {
+    60
+}
+fn default_heartbeat_interval_secs() -> u64 {
+    30
+}
+fn default_bind_timeout_ms() -> u64 {
+    5000
+}
+fn default_sse_heartbeat_ms() -> u64 {
+    15_000
+}
+fn default_backend() -> String {
+    "local".to_string()
+}
 
 #[cfg(test)]
 mod tests {
@@ -323,10 +368,14 @@ mod tests {
         // 指向临时目录后再验证默认值不受影响）。
         let dir = tempfile::tempdir().unwrap();
         let cfg_path = dir.path().join("ximed.toml");
-        std::fs::write(&cfg_path, r#"
+        std::fs::write(
+            &cfg_path,
+            r#"
 [server]
 addr = "127.0.0.1:1111"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         // 通过环境变量注入任意不存在文件路径的覆盖不可行；改为直接构造
         // Builder 验证 File 源语义（与 Settings::new 同构）。

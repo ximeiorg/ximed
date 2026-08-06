@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use domain::storage::{Storage, Result, validate_key};
+use domain::storage::{Result, Storage, validate_key};
 
 /// 本地文件系统存储（默认后端）。数据落在 `{data_dir}/{key}`，写入采用原子写（tmp + rename）。
 #[derive(Debug, Clone)]
@@ -73,10 +73,15 @@ impl Storage for LocalStorage {
                 };
                 if ft.is_dir() {
                     stack.push(path);
-                } else if ft.is_file() {
-                    if let Ok(rel) = path.strip_prefix(&self.data_dir) {
-                        out.push(rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/"));
-                    }
+                } else if ft.is_file()
+                    && let Ok(rel) = path.strip_prefix(&self.data_dir)
+                {
+                    out.push(
+                        rel.components()
+                            .map(|c| c.as_os_str().to_string_lossy())
+                            .collect::<Vec<_>>()
+                            .join("/"),
+                    );
                 }
             }
         }
@@ -93,7 +98,10 @@ mod tests {
     async fn put_get_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalStorage::new(dir.path());
-        store.put("clipboard/current.json", br#"{"type":"text"}"#).await.unwrap();
+        store
+            .put("clipboard/current.json", br#"{"type":"text"}"#)
+            .await
+            .unwrap();
         let data = store.get("clipboard/current.json").await.unwrap().unwrap();
         assert_eq!(data, br#"{"type":"text"}"#);
     }
@@ -111,7 +119,10 @@ mod tests {
         let store = LocalStorage::new(dir.path());
         store.put("clipboard/current.json", b"v1").await.unwrap();
         store.put("clipboard/current.json", b"v2").await.unwrap();
-        assert_eq!(store.get("clipboard/current.json").await.unwrap().unwrap(), b"v2");
+        assert_eq!(
+            store.get("clipboard/current.json").await.unwrap().unwrap(),
+            b"v2"
+        );
     }
 
     #[tokio::test]
@@ -145,7 +156,13 @@ mod tests {
         );
 
         let history = store.list("history").await.unwrap();
-        assert_eq!(history, vec!["history/1.json".to_string(), "history/nested/2.json".to_string()]);
+        assert_eq!(
+            history,
+            vec![
+                "history/1.json".to_string(),
+                "history/nested/2.json".to_string()
+            ]
+        );
 
         let missing = store.list("nope").await.unwrap();
         assert!(missing.is_empty());
@@ -156,9 +173,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalStorage::new(dir.path());
         store.put("clipboard/current.json", b"data").await.unwrap();
-        let entries: Vec<_> = std::fs::read_dir(dir.path().join("clipboard")).unwrap().collect();
+        let entries: Vec<_> = std::fs::read_dir(dir.path().join("clipboard"))
+            .unwrap()
+            .collect();
         assert_eq!(entries.len(), 1);
-        let name = entries[0].as_ref().unwrap().file_name().to_string_lossy().to_string();
+        let name = entries[0]
+            .as_ref()
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .to_string();
         assert_eq!(name, "current.json");
     }
 
@@ -167,7 +191,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalStorage::new(dir.path());
         for bad in ["", "..", "../evil", "a/../../b", "/abs", "a\\b", "a\0b"] {
-            assert!(store.put(bad, b"x").await.is_err(), "put {bad:?} should fail");
+            assert!(
+                store.put(bad, b"x").await.is_err(),
+                "put {bad:?} should fail"
+            );
             assert!(store.get(bad).await.is_err(), "get {bad:?} should fail");
         }
     }

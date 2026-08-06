@@ -60,11 +60,7 @@ pub struct SyncEngine {
 
 impl SyncEngine {
     /// 构造引擎。
-    pub fn new(
-        cfg: ClientConfig,
-        password: String,
-        clipboard: Arc<dyn ClipboardAdapter>,
-    ) -> Self {
+    pub fn new(cfg: ClientConfig, password: String, clipboard: Arc<dyn ClipboardAdapter>) -> Self {
         Self {
             transport: make_transport(&cfg, &password),
             cfg,
@@ -199,8 +195,7 @@ impl SyncEngine {
                         // 状态经回调上报 UI，由 UI 按 SyncMode 提示用户。
                         tracing::debug!("push failed: {e}");
                         // 退避重试：间隔内不再尝试，server 起来后自动补推
-                        self.retry_until =
-                            Some(std::time::Instant::now() + PUSH_RETRY_BACKOFF);
+                        self.retry_until = Some(std::time::Instant::now() + PUSH_RETRY_BACKOFF);
                         self.report_status(SyncStatus::Offline);
                     }
                 }
@@ -324,9 +319,8 @@ mod tests {
             other => panic!("expected write, got {other:?}"),
         }
         // 决策确认后执行写本地（Write 分支为同步操作）
-        match a {
-            SyncAction::Write(text) => e.clipboard.set(&text),
-            _ => {}
+        if let SyncAction::Write(text) = a {
+            e.clipboard.set(&text);
         }
         assert_eq!(cb.get().as_deref(), Some("from-server"));
         // 自写抑制：本地轮询到同一 hash 不应再推送
@@ -401,10 +395,7 @@ mod tests {
         *t.fail_push.lock().unwrap() = true;
         let a = e.on_local_poll(cb.get());
         e.execute(a).await;
-        assert_eq!(
-            seen.lock().unwrap().as_slice(),
-            &[SyncStatus::Offline]
-        );
+        assert_eq!(seen.lock().unwrap().as_slice(), &[SyncStatus::Offline]);
 
         // 退避结束后重试成功 → Online
         e.retry_until = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));

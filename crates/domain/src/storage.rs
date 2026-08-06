@@ -105,20 +105,44 @@ mod tests {
 
     #[test]
     fn valid_keys_accepted() {
-        for good in ["clipboard/current.json", "history/1.json", "files/a.txt", "a", "dir/a.b.c", ".hidden"] {
-            assert!(validate_key(good).is_ok(), "key {good:?} should be accepted");
+        for good in [
+            "clipboard/current.json",
+            "history/1.json",
+            "files/a.txt",
+            "a",
+            "dir/a.b.c",
+            ".hidden",
+        ] {
+            assert!(
+                validate_key(good).is_ok(),
+                "key {good:?} should be accepted"
+            );
         }
     }
 
     #[test]
     fn file_name_validation() {
         // 合法
-        for good in ["a.txt", "photo.jpg", "archive.tar.gz", "文件-1.png", "a_b_c.d"] {
-            assert!(validate_file_name(good).is_ok(), "file {good:?} should be accepted");
+        for good in [
+            "a.txt",
+            "photo.jpg",
+            "archive.tar.gz",
+            "文件-1.png",
+            "a_b_c.d",
+        ] {
+            assert!(
+                validate_file_name(good).is_ok(),
+                "file {good:?} should be accepted"
+            );
         }
         // 非法：路径分隔符 / 穿越 / 隐藏 / 控制字符
-        for bad in ["", "..", ".", "../evil", "a/b", "a\\b", ".hidden", "a\0b", "a\nb"] {
-            assert!(validate_file_name(bad).is_err(), "file {bad:?} should be rejected");
+        for bad in [
+            "", "..", ".", "../evil", "a/b", "a\\b", ".hidden", "a\0b", "a\nb",
+        ] {
+            assert!(
+                validate_file_name(bad).is_err(),
+                "file {bad:?} should be rejected"
+            );
         }
     }
 }

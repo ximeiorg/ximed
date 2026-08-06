@@ -43,10 +43,14 @@ pub trait Transport: Send + Sync {
 pub fn basic_auth_header(username: &str, password: &str) -> String {
     use base64::Engine;
     let cred = format!("{username}:{password}");
-    format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(cred.as_bytes()))
+    format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(cred.as_bytes())
+    )
 }
 
-type WsStream = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// 构造 WS 握手请求：由 URL 生成标准请求（含 Sec-WebSocket-Key / Upgrade / Version），
 /// 再补 Basic Auth 认证头。
@@ -54,17 +58,16 @@ type WsStream = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsSt
 /// 不能手动用 `http::Request::builder()` 拼：tungstenite 的 `IntoClientRequest`
 /// 对裸 `http::Request` 要求预置 `Sec-WebSocket-Key`，缺失会直接报
 /// `MissingSecWebSocketKey` 导致握手失败。
-fn build_connect_request(
-    url: &str,
-    auth: &str,
-) -> Result<http::Request<()>, TransportError> {
+fn build_connect_request(url: &str, auth: &str) -> Result<http::Request<()>, TransportError> {
     let mut request =
         tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(url)
             .map_err(|e| TransportError::Connect(e.to_string()))?;
     let header = auth
         .parse::<http::header::HeaderValue>()
         .map_err(|e| TransportError::Connect(e.to_string()))?;
-    request.headers_mut().insert(http::header::AUTHORIZATION, header);
+    request
+        .headers_mut()
+        .insert(http::header::AUTHORIZATION, header);
     Ok(request)
 }
 
@@ -72,7 +75,9 @@ fn build_connect_request(
 pub struct WsTransport {
     url: String,
     auth: String,
-    sink: tokio::sync::Mutex<Option<futures_util::stream::SplitSink<WsStream, tokio_tungstenite::tungstenite::Message>>>,
+    sink: tokio::sync::Mutex<
+        Option<futures_util::stream::SplitSink<WsStream, tokio_tungstenite::tungstenite::Message>>,
+    >,
     stream: tokio::sync::Mutex<Option<futures_util::stream::SplitStream<WsStream>>>,
 }
 
@@ -95,7 +100,10 @@ impl WsTransport {
             .await
             .map_err(|e| TransportError::Connect(e.to_string()))?;
         if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-            return Err(TransportError::Connect(format!("handshake {}", resp.status())));
+            return Err(TransportError::Connect(format!(
+                "handshake {}",
+                resp.status()
+            )));
         }
         let (sink, stream) = ws.split();
         *self.sink.lock().await = Some(sink);
@@ -111,7 +119,7 @@ impl WsTransport {
         let sink = guard
             .as_mut()
             .ok_or_else(|| TransportError::Send("no connection".into()))?;
-        sink.send(tokio_tungstenite::tungstenite::Message::Text(text.into()))
+        sink.send(tokio_tungstenite::tungstenite::Message::Text(text))
             .await
             .map_err(|e| TransportError::Send(e.to_string()))
     }
@@ -200,9 +208,15 @@ impl HttpTransport {
             return Err(TransportError::AuthRejected);
         }
         if !resp.status().is_success() {
-            return Err(TransportError::Recv(format!("history GET {}", resp.status())));
+            return Err(TransportError::Recv(format!(
+                "history GET {}",
+                resp.status()
+            )));
         }
-        let body = resp.bytes().await.map_err(|e| TransportError::Recv(e.to_string()))?;
+        let body = resp
+            .bytes()
+            .await
+            .map_err(|e| TransportError::Recv(e.to_string()))?;
         serde_json::from_slice(&body).map_err(|e| TransportError::Recv(e.to_string()))
     }
 }
@@ -239,8 +253,13 @@ impl Transport for HttpTransport {
         if !resp.status().is_success() {
             return Err(TransportError::Recv(format!("GET {}", resp.status())));
         }
-        let body = resp.bytes().await.map_err(|e| TransportError::Recv(e.to_string()))?;
-        serde_json::from_slice(&body).map(Some).map_err(|e| TransportError::Recv(e.to_string()))
+        let body = resp
+            .bytes()
+            .await
+            .map_err(|e| TransportError::Recv(e.to_string()))?;
+        serde_json::from_slice(&body)
+            .map(Some)
+            .map_err(|e| TransportError::Recv(e.to_string()))
     }
 
     async fn next_event(&self, timeout: Duration) -> Result<Option<Profile>, TransportError> {
@@ -253,7 +272,10 @@ impl Transport for HttpTransport {
 #[async_trait]
 impl Transport for WsTransport {
     async fn push(&self, profile: &Profile) -> Result<(), TransportError> {
-        self.send(&ClientMessage::ClipboardSet { data: profile.clone() }).await
+        self.send(&ClientMessage::ClipboardSet {
+            data: profile.clone(),
+        })
+        .await
     }
 
     async fn pull(&self) -> Result<Option<Profile>, TransportError> {
@@ -261,7 +283,8 @@ impl Transport for WsTransport {
         loop {
             let msg = self.recv_raw().await?;
             match msg {
-                ServerMessage::ClipboardSnapshot { data } | ServerMessage::ClipboardChanged { data } => {
+                ServerMessage::ClipboardSnapshot { data }
+                | ServerMessage::ClipboardChanged { data } => {
                     return Ok(Some(data));
                 }
                 _ => continue,
@@ -274,9 +297,8 @@ impl Transport for WsTransport {
             .await
             .map_err(|_| TransportError::Recv("timeout".into()))??;
         match msg {
-            ServerMessage::ClipboardChanged { data } | ServerMessage::ClipboardSnapshot { data } => {
-                Ok(Some(data))
-            }
+            ServerMessage::ClipboardChanged { data }
+            | ServerMessage::ClipboardSnapshot { data } => Ok(Some(data)),
             _ => Ok(None),
         }
     }
@@ -304,7 +326,9 @@ mod tests {
             "handshake must carry Sec-WebSocket-Key"
         );
         assert_eq!(
-            req.headers().get(http::header::UPGRADE).and_then(|v| v.to_str().ok()),
+            req.headers()
+                .get(http::header::UPGRADE)
+                .and_then(|v| v.to_str().ok()),
             Some("websocket")
         );
         assert_eq!(
@@ -314,7 +338,9 @@ mod tests {
             Some("13")
         );
         assert_eq!(
-            req.headers().get(http::header::AUTHORIZATION).and_then(|v| v.to_str().ok()),
+            req.headers()
+                .get(http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok()),
             Some("Basic YWxpY2U6c2VjcmV0")
         );
     }

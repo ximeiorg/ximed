@@ -264,6 +264,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // env_lock 需覆盖整个测试生命周期，防止 env 读写竞争
     async fn sse_push_event_and_last_event_id() {
         let _g = crate::config::env_lock();
         unsafe {

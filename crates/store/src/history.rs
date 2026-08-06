@@ -74,7 +74,11 @@ impl HistoryRepo {
     }
 
     /// 按时间倒序分页查询历史。
-    pub fn list(&self, limit: usize, before_seq: Option<u64>) -> rusqlite::Result<Vec<HistoryEntry>> {
+    pub fn list(
+        &self,
+        limit: usize,
+        before_seq: Option<u64>,
+    ) -> rusqlite::Result<Vec<HistoryEntry>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = match before_seq {
             Some(_) => conn.prepare(
@@ -160,7 +164,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let repo = HistoryRepo::open(dir.path().join("h.db")).unwrap();
         repo.insert(&entry(1, "v1")).unwrap();
-        repo.insert(&HistoryEntry { text: "v2".to_string(), ..entry(1, "ignored") }).unwrap();
+        repo.insert(&HistoryEntry {
+            text: "v2".to_string(),
+            ..entry(1, "ignored")
+        })
+        .unwrap();
         let all = repo.list(100, None).unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].text, "v2");

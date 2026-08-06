@@ -1,9 +1,9 @@
+use axum::Json;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::Json;
-use serde_json::json;
 use domain::profile::Profile;
+use serde_json::json;
 use service::{ClipboardError, ClipboardService, PutOutcome};
 
 use crate::auth::check_basic_auth;
@@ -34,22 +34,19 @@ pub async fn version() -> Json<serde_json::Value> {
 
 /// GET /api/clipboard
 /// 返回当前剪贴板 profile；带 `If-None-Match: <本地hash>` 且 hash 一致时返回 304。
-pub async fn get_clipboard(
-    State(state): State<SharedState>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn get_clipboard(State(state): State<SharedState>, headers: HeaderMap) -> Response {
     if let Err(resp) = require_auth(&headers, &state).await {
         return resp;
     }
     let profile = ClipboardService.load_current(&state.clipboard).await;
     let profile_hash = profile.hash.clone();
 
-    if let Some(etag) = headers.get(axum::http::header::IF_NONE_MATCH) {
-        if let Ok(etag) = etag.to_str() {
-            let etag = etag.trim_matches('"');
-            if etag == profile_hash {
-                return StatusCode::NOT_MODIFIED.into_response();
-            }
+    if let Some(etag) = headers.get(axum::http::header::IF_NONE_MATCH)
+        && let Ok(etag) = etag.to_str()
+    {
+        let etag = etag.trim_matches('"');
+        if etag == profile_hash {
+            return StatusCode::NOT_MODIFIED.into_response();
         }
     }
 
@@ -79,9 +76,11 @@ pub async fn put_clipboard(
         Err(ClipboardError::Invalid(msg)) => {
             (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response()
         }
-        Err(ClipboardError::Storage(msg)) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": msg }))).into_response()
-        }
+        Err(ClipboardError::Storage(msg)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": msg })),
+        )
+            .into_response(),
     }
 }
 
@@ -166,9 +165,7 @@ pub async fn get_file(
             resp
         }
         Ok(None) => (StatusCode::NOT_FOUND, "file not found").into_response(),
-        Err(ClipboardError::Invalid(msg)) => {
-            (StatusCode::BAD_REQUEST, msg).into_response()
-        }
+        Err(ClipboardError::Invalid(msg)) => (StatusCode::BAD_REQUEST, msg).into_response(),
         Err(ClipboardError::Storage(msg)) => {
             (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
         }

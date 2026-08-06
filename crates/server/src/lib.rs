@@ -61,7 +61,7 @@ pub async fn run_managed(
     std::fs::create_dir_all(&settings.server().data_dir)?;
 
     let storage = store::build_storage(
-        store::BackendKind::from_str(&settings.storage().backend),
+        store::BackendKind::from_name(&settings.storage().backend),
         &store::StorageOptions {
             data_dir: settings.server().data_dir.clone(),
             webdav_url: settings.storage().url.clone(),
@@ -120,7 +120,9 @@ pub async fn run_managed(
         app
     };
     let app = app
-        .layer(handlers::http::body_limit(settings.clipboard().max_frame_size))
+        .layer(handlers::http::body_limit(
+            settings.clipboard().max_frame_size,
+        ))
         .with_state(app_state);
 
     let addr: std::net::SocketAddr = settings.server().addr.parse()?;
@@ -146,7 +148,11 @@ pub async fn run_managed(
             wait_shutdown(&mut shutdown).await;
             shutdown_handle.graceful_shutdown(None);
         };
-        tracing::info!("ximed {} (https) listening on {}", env!("CARGO_PKG_VERSION"), addr);
+        tracing::info!(
+            "ximed {} (https) listening on {}",
+            env!("CARGO_PKG_VERSION"),
+            addr
+        );
         tokio::select! {
             result = axum_server::bind_rustls(addr, tls_config)
                 .handle(handle)
@@ -169,8 +175,8 @@ pub async fn run_managed(
 
 #[cfg(test)]
 mod tests {
-    use super::run_managed;
     use super::Settings;
+    use super::run_managed;
     use crate::config::{self, AuthConfig, ServerConfig};
     use std::net::TcpListener;
 
@@ -242,16 +248,14 @@ mod tests {
 
         let _ = tx.send(true);
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            task,
-        )
-        .await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), task).await;
         assert!(
             result.is_ok(),
             "server must exit after shutdown signal, got timeout"
         );
-        assert!(result.unwrap().is_ok(), "server run_managed should return Ok");
+        assert!(
+            result.unwrap().is_ok(),
+            "server run_managed should return Ok"
+        );
     }
 }
-

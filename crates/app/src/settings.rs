@@ -5,19 +5,14 @@
 use serde::{Deserialize, Serialize};
 
 /// client 连接模式。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SyncMode {
     /// 连接本机 server（Form 2 默认，地址/端口自动跟随 server 配置）。
+    #[default]
     Local,
     /// 连接远程 server。
     Remote,
-}
-
-impl Default for SyncMode {
-    fn default() -> Self {
-        Self::Local
-    }
 }
 
 /// 应用级设置。
@@ -61,8 +56,8 @@ impl AppSettings {
     pub fn save(&self, config_dir: &str) -> std::io::Result<()> {
         let dir = std::path::Path::new(config_dir);
         std::fs::create_dir_all(dir)?;
-        let text = toml::to_string_pretty(self)
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        let text =
+            toml::to_string_pretty(self).map_err(|e| std::io::Error::other(e.to_string()))?;
         std::fs::write(dir.join("ximed-client.toml"), text)
     }
 }

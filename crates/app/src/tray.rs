@@ -20,6 +20,7 @@ use crate::ui::UiMsg;
 /// - ShowWindow → UI 把窗口设为 Windowed（从托盘恢复）
 /// - HideWindow → UI 把窗口设为 Hidden（隐藏到托盘）
 /// - Quit → 发送专用消息由 UI 处理退出
+///
 /// 当前 iced 窗口常驻，托盘主要提供状态提示与显示/隐藏入口。
 ///
 /// 注意：`TrayIcon` 被 drop 时系统会移除托盘图标，因此这里用 `Box::leak`
@@ -72,10 +73,8 @@ pub fn setup(tx: crate::ui::UiSender) -> Result<(), Box<dyn std::error::Error>> 
                     let _ = tx.send(UiMsg::Quit);
                 }
             }
-            if let Ok(event) = tray_rx.try_recv() {
-                if let tray_icon::TrayIconEvent::Click { .. } = event {
-                    let _ = tx.send(UiMsg::ShowWindow);
-                }
+            if let Ok(tray_icon::TrayIconEvent::Click { .. }) = tray_rx.try_recv() {
+                let _ = tx.send(UiMsg::ShowWindow);
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }

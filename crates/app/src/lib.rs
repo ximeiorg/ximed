@@ -79,7 +79,9 @@ pub fn run_client() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let mut engine = SyncEngine::new(cfg.clone(), password.clone(), cb);
                 let tx_engine = tx.clone();
                 let source = cfg.source.clone();
-                let _ = tx_engine.send(ui::UiMsg::EngineStarted { source: source.clone() });
+                let _ = tx_engine.send(ui::UiMsg::EngineStarted {
+                    source: source.clone(),
+                });
                 let engine_task = tokio::spawn(async move {
                     engine.run().await;
                     let _ = tx_engine.send(ui::UiMsg::EngineStopped { source });
@@ -104,8 +106,16 @@ pub fn run_client() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             });
         });
         // client-only：无本地 server，不显示服务器控制区与设置面板
-        ui::run_ui(ui_cfg, settings::AppSettings::default(), ui_tx, ui_cmd_tx, rx, false, String::new())
-            .map_err(|e| e.into())
+        ui::run_ui(
+            ui_cfg,
+            settings::AppSettings::default(),
+            ui_tx,
+            ui_cmd_tx,
+            rx,
+            false,
+            String::new(),
+        )
+        .map_err(|e| e.into())
     }
 
     #[cfg(not(feature = "tray"))]

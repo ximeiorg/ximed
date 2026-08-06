@@ -1,14 +1,14 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use tokio::sync::{broadcast, RwLock};
 use domain::profile::{Profile, ProfileType};
 use domain::protocol::ClipboardEvent;
 use domain::storage::Storage;
 use store::clipboard::ClipboardRepo;
 #[cfg(feature = "history")]
 use store::history::HistoryRepo;
+use tokio::sync::{RwLock, broadcast};
 
 /// 环形事件缓冲容量（Last-Event-ID 断线重连时最多补发的事件数）。
 pub const EVENT_BUFFER_CAPACITY: usize = 128;
@@ -112,7 +112,9 @@ impl ClipboardService {
     /// 校验 hash 是否为小写 hex SHA256（64 位 hex）。
     pub fn validate_hash(hash: &str) -> bool {
         hash.len() == 64
-            && hash.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+            && hash
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
     }
 
     /// 校验上传 profile：hash 必须是小写 hex SHA256 且与内容一致；size 与文本实际字节一致。
@@ -156,7 +158,11 @@ impl ClipboardService {
 
     /// 上传当前剪贴板。整个读-比较-持久化-更新缓存序列在写锁内原子执行，
     /// 相同 hash 幂等丢弃（不广播、不落盘）。
-    pub async fn put(&self, ctx: &ClipboardContext, profile: Profile) -> Result<PutOutcome, ClipboardError> {
+    pub async fn put(
+        &self,
+        ctx: &ClipboardContext,
+        profile: Profile,
+    ) -> Result<PutOutcome, ClipboardError> {
         Self::validate_profile(&profile)?;
 
         let mut current_guard = ctx.current.write().await;
@@ -168,15 +174,14 @@ impl ClipboardService {
             repo.get_current().await.unwrap_or_default()
         };
         if current.hash == profile.hash {
-            tracing::debug!(
-                "clipboard set idempotent, dropped (hash={})",
-                &profile.hash
-            );
+            tracing::debug!("clipboard set idempotent, dropped (hash={})", &profile.hash);
             return Ok(PutOutcome::Unchanged);
         }
 
         let repo = ClipboardRepo::new(ctx.store.clone());
-        repo.save_current(&profile).await.map_err(|e| ClipboardError::Storage(e.to_string()))?;
+        repo.save_current(&profile)
+            .await
+            .map_err(|e| ClipboardError::Storage(e.to_string()))?;
         *current_guard = Some(profile.clone());
         let event = ctx.record_event(profile.clone()).await;
         let _ = ctx.broadcast.send(event.clone());
@@ -223,7 +228,12 @@ impl ClipboardService {
     }
 
     /// 保存附件内容到 `files/{name}`。
-    pub async fn put_file(&self, ctx: &ClipboardContext, name: &str, data: &[u8]) -> Result<(), ClipboardError> {
+    pub async fn put_file(
+        &self,
+        ctx: &ClipboardContext,
+        name: &str,
+        data: &[u8],
+    ) -> Result<(), ClipboardError> {
         let key = Self::file_key(name)?;
         ctx.store
             .put(&key, data)
@@ -232,7 +242,11 @@ impl ClipboardService {
     }
 
     /// 读取附件内容；不存在返回 None。
-    pub async fn get_file(&self, ctx: &ClipboardContext, name: &str) -> Result<Option<Vec<u8>>, ClipboardError> {
+    pub async fn get_file(
+        &self,
+        ctx: &ClipboardContext,
+        name: &str,
+    ) -> Result<Option<Vec<u8>>, ClipboardError> {
         let key = Self::file_key(name)?;
         ctx.store
             .get(&key)
@@ -247,7 +261,8 @@ mod tests {
     use store::local::LocalStorage;
 
     fn test_ctx() -> ClipboardContext {
-        let store: Arc<dyn Storage> = Arc::new(LocalStorage::new(tempfile::tempdir().unwrap().path()));
+        let store: Arc<dyn Storage> =
+            Arc::new(LocalStorage::new(tempfile::tempdir().unwrap().path()));
         ClipboardContext::new(store)
     }
 
@@ -310,8 +325,14 @@ mod tests {
         let ctx = test_ctx();
         let svc = ClipboardService;
         let p = profile("hi", None);
-        assert!(matches!(svc.put(&ctx, p.clone()).await.unwrap(), PutOutcome::Saved(_)));
-        assert!(matches!(svc.put(&ctx, p.clone()).await.unwrap(), PutOutcome::Unchanged));
+        assert!(matches!(
+            svc.put(&ctx, p.clone()).await.unwrap(),
+            PutOutcome::Saved(_)
+        ));
+        assert!(matches!(
+            svc.put(&ctx, p.clone()).await.unwrap(),
+            PutOutcome::Unchanged
+        ));
     }
 
     #[tokio::test]
@@ -352,7 +373,10 @@ mod tests {
                 same_count += 1;
             }
         }
-        assert_eq!(same_count, 1, "concurrent same-hash PUT must broadcast exactly once");
+        assert_eq!(
+            same_count, 1,
+            "concurrent same-hash PUT must broadcast exactly once"
+        );
     }
 
     #[tokio::test]
@@ -365,12 +389,16 @@ mod tests {
         let c_get = ctx.clone();
         let c_put = ctx.clone();
         let get_h = tokio::spawn(async move { ClipboardService.load_current(&c_get).await });
-        let put_h = tokio::spawn(async move { ClipboardService.put(&c_put, profile("new", None)).await });
+        let put_h =
+            tokio::spawn(async move { ClipboardService.put(&c_put, profile("new", None)).await });
         put_h.await.unwrap().unwrap();
         get_h.await.unwrap();
 
         let cached = ctx.current.read().await.clone().unwrap();
-        assert_eq!(cached.text, "new", "GET stale fill must not clobber committed PUT");
+        assert_eq!(
+            cached.text, "new",
+            "GET stale fill must not clobber committed PUT"
+        );
         assert_eq!(svc.load_current(&ctx).await.text, "new");
     }
 
@@ -391,7 +419,9 @@ mod tests {
     async fn file_put_get_roundtrip() {
         let ctx = test_ctx();
         let svc = ClipboardService;
-        svc.put_file(&ctx, "photo.jpg", b"image-bytes").await.unwrap();
+        svc.put_file(&ctx, "photo.jpg", b"image-bytes")
+            .await
+            .unwrap();
         let got = svc.get_file(&ctx, "photo.jpg").await.unwrap().unwrap();
         assert_eq!(got, b"image-bytes");
         // 不存在返回 None

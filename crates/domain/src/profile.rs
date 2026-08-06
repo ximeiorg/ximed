@@ -88,13 +88,27 @@ mod tests {
         let p = Profile::from_text("你好", Some("device-a".to_string()));
         let json = serde_json::to_string(&p).unwrap();
         // 字段一律小写：type / has_data / data_name / source，不允许大写开头
-        for field in ["type", "hash", "text", "has_data", "data_name", "size", "source"] {
-            assert!(json.contains(&format!("\"{field}\"")), "missing field {field}: {json}");
+        for field in [
+            "type",
+            "hash",
+            "text",
+            "has_data",
+            "data_name",
+            "size",
+            "source",
+        ] {
+            assert!(
+                json.contains(&format!("\"{field}\"")),
+                "missing field {field}: {json}"
+            );
         }
         for bad in ["Type", "HasData", "DataName", "Source"] {
             assert!(!json.contains(bad), "uppercase field {bad} in {json}");
         }
-        assert!(json.contains("\"type\":\"text\""), "enum should serialize lowercase: {json}");
+        assert!(
+            json.contains("\"type\":\"text\""),
+            "enum should serialize lowercase: {json}"
+        );
     }
 
     #[test]
@@ -136,7 +150,11 @@ mod tests {
             (ProfileType::None, "none"),
         ] {
             let json = serde_json::to_string(&ty).unwrap();
-            assert_eq!(json, format!("\"{s}\""), "variant {s} should serialize lowercase");
+            assert_eq!(
+                json,
+                format!("\"{s}\""),
+                "variant {s} should serialize lowercase"
+            );
             let back: ProfileType = serde_json::from_str(&json).unwrap();
             assert_eq!(back, ty);
         }

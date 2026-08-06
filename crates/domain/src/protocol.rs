@@ -42,13 +42,21 @@ pub enum ClientMessage {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
     #[serde(rename = "auth.ok")]
-    AuthOk { version: String },
+    AuthOk {
+        version: String,
+    },
     #[serde(rename = "auth.error")]
-    AuthError { reason: String },
+    AuthError {
+        reason: String,
+    },
     #[serde(rename = "clipboard.changed")]
-    ClipboardChanged { data: Profile },
+    ClipboardChanged {
+        data: Profile,
+    },
     #[serde(rename = "clipboard.snapshot")]
-    ClipboardSnapshot { data: Profile },
+    ClipboardSnapshot {
+        data: Profile,
+    },
     Ping,
 }
 
@@ -106,7 +114,10 @@ mod tests {
             (r#"{"type":"ping"}"#, ClientMessage::Ping),
             (
                 r#"{"type":"auth","user":"alice","token":"xxx"}"#,
-                ClientMessage::Auth { user: "alice".to_string(), token: "xxx".to_string() },
+                ClientMessage::Auth {
+                    user: "alice".to_string(),
+                    token: "xxx".to_string(),
+                },
             ),
         ];
         for (json, expected) in cases {
@@ -139,14 +150,23 @@ mod tests {
         );
 
         assert_eq!(
-            serde_json::to_string(&ServerMessage::AuthOk { version: "0.1.0".to_string() }).unwrap(),
+            serde_json::to_string(&ServerMessage::AuthOk {
+                version: "0.1.0".to_string()
+            })
+            .unwrap(),
             r#"{"type":"auth.ok","version":"0.1.0"}"#
         );
         assert_eq!(
-            serde_json::to_string(&ServerMessage::AuthError { reason: "invalid credentials".to_string() }).unwrap(),
+            serde_json::to_string(&ServerMessage::AuthError {
+                reason: "invalid credentials".to_string()
+            })
+            .unwrap(),
             r#"{"type":"auth.error","reason":"invalid credentials"}"#
         );
-        assert_eq!(serde_json::to_string(&ServerMessage::Ping).unwrap(), r#"{"type":"ping"}"#);
+        assert_eq!(
+            serde_json::to_string(&ServerMessage::Ping).unwrap(),
+            r#"{"type":"ping"}"#
+        );
     }
 
     #[test]
