@@ -1,35 +1,57 @@
 # PROGRESS
 
-> 更新：2026-08-06 · 阶段：P6 + P7 全部完成（未提交）
+> 更新：2026-08-06 · 阶段：三形态架构（server/client/desktop）实现完成（未提交）
 
 ## 当前状态
 
-- **P6 部署优化完成**：release profile + 交叉编译配置 + systemd + 内存 benchmark
-- **P7 全部完成**：HTTPS / WebDAV / 历史记录 / 图片文件同步
-- **56 个测试全绿**（domain 12 + store 12 + service 19 + server 16）；无 openssl/native-tls/openssl-sys；无编译警告
-- release 二进制 1.5MB，实测内存 1MB（目标 < 20MB）
+- **三形态架构完成**：
+  - Form 1 `ximed server`（或 `server` 二进制）：仅服务器，release 3MB
+  - Form 2 `ximed desktop`：同进程 client + iced 窗口 + 托盘 + **受控 server**（不自动启动，UI 手动启停）；**零配置启动**（未配密码时自动生成随机密码落盘 `{data_dir}/auth_password`，权限 0600，client 复用）
+  - Form 3 `ximed client`：仅客户端 daemon + 托盘（默认构建）；无 UI 构建下退化为纯 daemon
+- **UI 左右分栏**（iced）：左侧导航（状态/剪贴板历史）+ 右侧内容面板
+  - 状态面板：server / engine / 设备状态 + **本地服务器控制区**（仅 desktop 显示：开启/重启/关闭 + 打开配置文件所在目录）
+  - 历史面板：后台线程周期拉取 `/api/clipboard/history`（3s）显示剪贴板历史列表
+  - **配置编辑面板已移除**：不再在 UI 中编辑 ximed.toml，改为控制区打开配置文件所在目录（macOS `open` / Linux `xdg-open`）
+- **server 受管启动**：`server::run_managed(settings, shutdown_watch)` 支持优雅停止（HTTP `with_graceful_shutdown` / TLS `Handle::graceful_shutdown`），desktop 后台 `server_control_loop` 响应 UI 命令启停；UI 经新 `UiCmd` 通道命令后台
+- **密码支持配置文件名直写**（环境变量优先，非必需）：`auth.password` / `[client] password` 字段
+- **UI 框架 iced 0.14**：**wgpu（GPU，Metal/Vulkan）优先 + tiny-skia（CPU）自动兜底**（低性能设备仅跑 server，不受影响）；完整构建 32s
+- **67 个测试全绿**（含 `run_managed` 优雅停止测试）；无 openssl；无编译警告
+- **构建方式（详见设计文档 8.5）**：
+  - `cargo build --release -p server` → Form 1（3MB）
+  - `cargo build --release -p app` → Form 2/3 统一二进制（含托盘）
+  - `cargo build --release -p app --no-default-features` → 精简构建（仅 server + 纯 daemon client）
 
 ## 下一步
 
-1. 代码审查（未提交变更）后提交
-2. P5（Xime 宿主扩展 + 采集插件 + 端到端）待用户确认是否实施
-3. 可选：S3 存储后端（feature，大依赖按需）
+1. 审查未提交变更后提交
+2. 端到端实测：desktop 点「开启」→ 本地 server 启动 → 真实剪贴板复制 → 同步到其他设备
+3. 可选：macOS .app 打包（LSUIElement）、Linux 桌面测试
 
 ## 已完成
 
-- [x] P1-P4 + 分层重构（domain/store/service/server 四层单向依赖）
-- [x] **P6 部署优化**：
-  - workspace `[profile.release]`：opt-level=z / lto / codegen-units=1 / strip / panic=abort
-  - `.cargo/config.toml`：交叉编译 alias（build-rpi / build-rpi-armv7）+ musl-gcc linker
-  - `deploy/ximed.service`：systemd（Restart=always、MemoryMax、资源/安全限制、journald）
-  - `deploy/bench_memory.sh`：内存 benchmark（实测 RSS 1MB）
-- [x] **P7a HTTPS**：axum-server + rustls（参考官方 example-tls-rustls），证书/私钥经 `XIMED_TLS_CERT`/`XIMED_TLS_KEY` 环境变量注入（不落盘）；tls.enabled 切换；端到端验证（healthz/PUT/SSE 全走 HTTPS）
-- [x] **P7b WebDAV**：`store` crate webdav feature（reqwest rustls，无 openssl）；`WebDavStorage` 实现 Storage trait（PUT/GET/DELETE/PROPFIND + MKCOL 建目录 + Basic Auth + url 解码）；`BackendKind`/`StorageOptions` 装配
-- [x] **P7c 历史记录**：`store` crate history feature（rusqlite bundled 手写 SQL，决策 9）；`HistoryRepo`（Mutex<Connection> 保证 Send+Sync）；service PUT 时写入；`GET /api/clipboard/history?limit=&before_seq=` 分页倒序；端到端验证（3 条倒序 + 分页 + 401）
-- [x] **P7d 图片/文件同步**：domain `validate_file_name`（防路径穿越）；service `put_file`/`get_file`（files/{name} 键空间）；WS 协议扩展 `file.set`/`file.get` + binary 帧上传（pending_file 状态）；`GET /api/clipboard/file?name=` 下载；端到端验证（WS binary 上传 → 落盘 → HTTP 下载字节一致）
+- [x] P1-P7 全部（历史记录、WebDAV、HTTPS、文件同步，见下）
+- [x] **三形态架构（本次）**：
+  - **server 库化**：`crates/server/src/lib.rs` 暴露 `run(settings)` / `run_managed` / `init_tracing` / `check_auth_password`，`main.rs` 变薄入口；行为不变，测试保绿
+  - **client crate（新增）**：`ClipboardAdapter`（arboard，跨平台）+ `WsTransport`（tokio-tungstenite Basic Auth）/`HttpTransport`（reqwest rustls 兜底）+ `SyncEngine`（轮询本地 + 远端事件，hash 去重 + 自写回声抑制 + 纯决策函数可单测）；`ClientConfig::load`（config-rs `[client]` 节 + `XIMED_CLIENT_*` env）
+  - **app crate（新增）**：`ximed` 统一二进制，clap 子命令 `server` / `client` / `desktop`
+  - **desktop 形态**：iced 窗口（主线程）+ 后台 tokio 线程承载 client 引擎 + 历史轮询 + **受控 server**；server 不自动启动，UI 控制区按钮经 `UiCmd` 通道启停
+  - **托盘**：tray-icon + muda（`tray` feature 门控）；菜单（状态/显示窗口/退出）+ 左键点击；事件经 proxy 转发 iced
+  - **部署文件**：`deploy/ximed.desktop.systemd.service`（桌面 systemd user unit）+ `deploy/com.ximed.desktop.plist`（macOS launchd，含 LSUIElement 说明）+ `deploy/ximed.desktop.toml.example`（桌面配置示例）
+- [x] P6 部署优化 / P7a HTTPS / P7b WebDAV / P7c 历史记录 / P7d 文件同步
 
 ## 待办（后续功能点）
 
 - [ ] 审查未提交变更后 GPG 提交
-- [ ] P5 Xime 宿主扩展 + 采集插件 + 端到端（待确认）
+- [ ] 真实剪贴板端到端验证（desktop 手动开启 server → 桌面复制 → 手机/另一桌面同步）
+- [ ] macOS .app 打包（LSUIElement + 图标）
+- [ ] P5 Xime 宿主扩展 + 采集插件（待确认）
 - [ ] S3 存储后端（按需，大依赖）
+
+## 关键实现细节（本次会话）
+
+- iced 0.14 函数式 API：`application(boot, update, view)` + `subscription(Fn(&State) -> Subscription)` + `.theme(Fn)`
+- 跨线程桥接：std mpsc channel（后台线程 `tx.send`）+ `Subscription::run_with(RxId(rx), fn)` 轮询注入；`RxId` 实现 `Hash + Clone + Eq` 满足 subscription data 约束
+- **UI → 后台命令通道**：`UiCmd`（ServerStart/Restart/Stop/OpenConfigDir）经 std mpsc；`server_control_loop` 200ms 轮询响应，watch channel 触发 `server::run_managed` 优雅停止
+- tray-icon 0.24 / muda 0.19：`MenuEvent::receiver()` crossbeam channel 任意线程轮询；`Rc<MenuId>` 非 Send，轮询线程只捕获 id 字符串；托盘事件经 UI channel 转发（含 Quit → `UiMsg::Quit` → `iced::exit()`）
+- iced 渲染：**wgpu（GPU）优先 + tiny-skia 自动兜底**；tiny-skia 软渲染下 `Shadow` 逐像素计算，大面积容器不用阴影（Retina 下 ~2.5M 物理像素/帧会卡）
+- 依赖在 app crate（feature `tray`），server crate 零 UI 依赖，保持低端设备轻量

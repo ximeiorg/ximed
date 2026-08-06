@@ -1,0 +1,66 @@
+# ximed 桌面形态配置示例
+#
+# 放置位置（优先级从低到高）：
+#   1. ./ximed.toml（当前目录）
+#   2. /app/ximed.toml
+#   3. /etc/ximed/config.toml
+# 桌面形态常用：~/.config/ximed/ximed.toml（配合 systemd user unit / launchd）
+
+# ===== server 段（Form 2 desktop 内置服务器）=====
+[server]
+# 监听地址：0.0.0.0 供局域网手机/其他设备访问；127.0.0.1 仅本机
+addr = "0.0.0.0:8443"
+data_dir = "./data"
+log_level = "info"
+
+[auth]
+username = "alice"
+# 密码二选一（均可）：
+# 1) 直接写配置文件：password = "your_password"
+# 2) 环境变量（优先级更高）：export XIMED_AUTH_PASSWORD=your_password
+password_env = "XIMED_AUTH_PASSWORD"
+
+[clipboard]
+max_frame_size = 1048576
+idle_timeout_secs = 60
+heartbeat_interval_secs = 30
+
+[http]
+enabled = true
+
+[ws]
+enabled = true
+
+[sse]
+enabled = true
+
+[storage]
+backend = "local"
+# webdav 后端示例：
+# backend = "webdav"
+# url = "https://dav.example.com/dav/ximed/"
+# username = "davuser"
+# password_env = "XIMED_WEBDAV_PASSWORD"
+
+[tls]
+enabled = false
+
+# ===== client 段（Form 2/3 同步引擎）=====
+[client]
+# 服务器地址：desktop 模式通常指向本机内置服务器
+server_url = "http://127.0.0.1:8443"
+username = "alice"
+# 密码二选一（均可）：
+# 1) 直接写配置文件：password = "your_password"
+# 2) 环境变量（优先级更高）：export XIMED_CLIENT_PASSWORD=your_password
+password_env = "XIMED_CLIENT_PASSWORD"
+# 本机设备标识（写入 profile.source）
+# source = "my-desktop"
+# 本地剪贴板轮询间隔（毫秒）
+# poll_ms = 500
+# WS 断线后 HTTP 轮询间隔（毫秒）
+# http_fallback_ms = 500
+# WS 心跳间隔（秒）
+# heartbeat_secs = 30
+# 是否启用 WS 实时通道（false 则纯 HTTP 轮询）
+# ws_enabled = true

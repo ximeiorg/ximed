@@ -111,6 +111,10 @@ pub struct ServerConfig {
 pub struct AuthConfig {
     #[serde(default = "default_username")]
     pub username: String,
+    /// 密码来源：环境变量（`password_env` 指定，默认 `XIMED_AUTH_PASSWORD`）优先；
+    /// 未设置环境变量时回退到配置文件 `password` 字段。两者都未配置则认证不可用。
+    #[serde(default)]
+    pub password: Option<String>,
     #[serde(default = "default_password_env")]
     pub password_env: String,
     #[serde(default = "default_max_connections")]
@@ -118,9 +122,12 @@ pub struct AuthConfig {
 }
 
 impl AuthConfig {
-    /// 从环境变量读取密码（敏感项不落盘明文）。
+    /// 读取密码：环境变量优先，配置文件 `password` 字段兜底。
     pub fn password(&self) -> Option<String> {
-        std::env::var(&self.password_env).ok().filter(|p| !p.is_empty())
+        std::env::var(&self.password_env)
+            .ok()
+            .filter(|p| !p.is_empty())
+            .or_else(|| self.password.clone().filter(|p| !p.is_empty()))
     }
 }
 
@@ -252,6 +259,33 @@ mod tests {
         unsafe {
             std::env::remove_var(&s.auth().password_env);
         }
+    }
+
+    #[test]
+    fn password_from_config_file_field() {
+        let _g = env_lock();
+        // 未设置环境变量时，配置文件 password 字段兜底
+        unsafe {
+            std::env::remove_var("XIMED_AUTH_PASSWORD");
+        }
+        let mut cfg = AuthConfig {
+            username: "alice".to_string(),
+            password: Some("file-secret".to_string()),
+            password_env: "XIMED_AUTH_PASSWORD".to_string(),
+            max_connections: 32,
+        };
+        assert_eq!(cfg.password().as_deref(), Some("file-secret"));
+        // 环境变量优先级更高
+        unsafe {
+            std::env::set_var("XIMED_AUTH_PASSWORD", "env-secret");
+        }
+        assert_eq!(cfg.password().as_deref(), Some("env-secret"));
+        cfg.password = None;
+        assert_eq!(cfg.password().as_deref(), Some("env-secret"));
+        unsafe {
+            std::env::remove_var("XIMED_AUTH_PASSWORD");
+        }
+        assert_eq!(cfg.password(), None);
     }
 
     #[test]

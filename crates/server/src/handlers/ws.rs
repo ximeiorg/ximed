@@ -191,6 +191,7 @@ mod tests {
         let store: Arc<dyn Storage> = Arc::new(LocalStorage::new(tempfile::tempdir().unwrap().path()));
         let auth = AuthConfig {
             username: "alice".to_string(),
+            password: None,
             password_env: "XIMED_AUTH_PASSWORD".to_string(),
             max_connections: 32,
         };

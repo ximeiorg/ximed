@@ -1,0 +1,36 @@
+# ximed 桌面形态（Form 2/3）systemd user unit
+#
+# 用途：桌面 Linux（systemd --user）后台运行 ximed desktop（server + client + 托盘）。
+#
+# 安装：
+#   1. 将二进制放到 ~/.local/bin/ximed
+#   2. 复制本文件到 ~/.config/systemd/user/ximed.service
+#   3. 在 ~/.config/ximed/ximed.toml 配置 server 与 client 段（可选）
+#   4. export XIMED_AUTH_PASSWORD=xxx XIMED_CLIENT_PASSWORD=xxx（写入 ~/.config/ximed/env）
+#   5. systemctl --user daemon-reload && systemctl --user enable --now ximed
+#
+# 注意：桌面 GUI（托盘/窗口）依赖图形会话，需在登录会话内启用
+# （systemctl --user 默认运行于登录会话，无需 sudo）。
+
+[Unit]
+Description=ximed desktop clipboard sync (server + client + tray)
+After=graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.config/ximed
+EnvironmentFile=-%h/.config/ximed/env
+ExecStart=%h/.local/bin/ximed desktop
+Restart=always
+RestartSec=3
+
+# 桌面进程内存上限（vizia/skia 桌面 UI 比 server 大，但仍控制）
+MemoryMax=256M
+
+# 日志走 journald
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

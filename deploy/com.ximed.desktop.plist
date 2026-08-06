@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ximed 桌面形态（Form 2）macOS launchd 配置
+
+  用途：登录后后台运行 ximed desktop（server + client + 托盘/菜单栏）。
+
+  安装：
+    1. 将二进制放到 /usr/local/bin/ximed
+    2. 复制本文件到 ~/Library/LaunchAgents/com.ximed.desktop.plist
+    3. 在 ~/.config/ximed/ximed.toml 配置 server 与 client 段（可选）
+    4. 密码经环境变量：`launchctl setenv XIMED_AUTH_PASSWORD xxx`
+       `launchctl setenv XIMED_CLIENT_PASSWORD xxx`（登录会话内）
+    5. launchctl load ~/Library/LaunchAgents/com.ximed.desktop.plist
+
+  菜单栏应用（LSUIElement）：
+    打包 .app 时在 Info.plist 加入：
+      <key>LSUIElement</key><true/>
+    使 Dock 不显示图标、仅保留菜单栏托盘（ximed 托盘已提供状态/显示/退出菜单）。
+    以裸二进制运行（非 .app）时菜单栏图标仍正常，但需要终端前台启动一次。
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ximed.desktop</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/ximed</string>
+        <string>desktop</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/&lt;USER&gt;/.config/ximed</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/ximed.desktop.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/ximed.desktop.log</string>
+</dict>
+</plist>

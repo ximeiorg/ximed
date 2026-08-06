@@ -1,0 +1,25 @@
+[package]
+name = "client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait = "0.1"
+domain = { path = "../domain" }
+tokio = { version = "1", features = ["time", "macros", "rt", "sync"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+http = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+config = "0.15"
+base64 = "0.22"
+thiserror = "2"
+arboard = "3"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["rt", "macros", "time"] }

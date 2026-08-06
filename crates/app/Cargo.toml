@@ -1,0 +1,37 @@
+[package]
+name = "app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ximed"
+path = "src/main.rs"
+
+[features]
+default = ["tray"]
+# 托盘/窗口 UI（桌面形态）；server-only 构建可关掉以减小体积
+tray = ["dep:tray-icon", "dep:muda", "dep:iced"]
+
+[dependencies]
+server = { path = "../server" }
+client = { path = "../client" }
+domain = { path = "../domain" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# 轻量 CLI 子命令解析
+clap = { version = "4", features = ["derive"] }
+# 随机密码生成（desktop 零配置启动）
+getrandom = "0.3"
+base64 = "0.22"
+# 桌面 UI（feature tray）：wgpu（GPU，Metal/Vulkan）优先，tiny-skia（CPU）自动兜底。
+# 低性能设备（树莓派等）无 GPU 时自动回退软渲染，无需额外配置。
+iced = { version = "0.14", optional = true, default-features = false, features = ["tokio", "wgpu", "tiny-skia", "x11", "wayland"] }
+# 托盘（feature tray）
+tray-icon = { version = "0.24", optional = true, default-features = false }
+muda = { version = "0.19", optional = true, default-features = false }
+
+[dev-dependencies]
+tempfile = "3"

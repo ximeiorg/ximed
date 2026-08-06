@@ -56,6 +56,7 @@ mod tests {
     fn test_auth_config() -> AuthConfig {
         crate::config::AuthConfig {
             username: "alice".to_string(),
+            password: None,
             password_env: "XIMED_AUTH_PASSWORD".to_string(),
             max_connections: 32,
         }

@@ -462,38 +462,112 @@ ximed/
 │   │   ├── src/profile.rs     # Profile 类型
 │   │   ├── src/hash.rs        # SHA256 hash 计算
 │   │   ├── src/protocol.rs    # WS/SSE/HTTP 消息帧类型
-│   │   └── src/storage.rs     # Storage trait（抽象）
+│   │   └── src/storage.rs     # Storage trait（抽象）+ validate_file_name
 │   ├── store/                 # 存储层：Storage 实现 + 数据仓库
 │   │   ├── src/local.rs       # LocalStorage（原子写 tmp+rename）
 │   │   ├── src/clipboard.rs   # ClipboardRepo（当前剪贴板存取封装）
+│   │   ├── src/history.rs     # HistoryRepo（rusqlite，feature history）
+│   │   ├── src/webdav.rs      # WebDavStorage（feature webdav，reqwest rustls）
 │   │   └── src/store_factory.rs # 后端装配（按配置选择）
 │   ├── service/               # 服务层：业务逻辑
 │   │   ├── src/clipboard.rs   # ClipboardService（校验/幂等/广播/缓存）+ ClipboardContext
 │   │   └── src/lib.rs
-│   └── server/                # handler 层：HTTP/WS 入口（axum）
-│       ├── default.toml       # 内嵌默认配置（include_str! 编译进二进制）
+│   ├── server/                # 服务器 crate（Form 1）
+│   │   ├── default.toml       # 内嵌默认配置（include_str! 编译进二进制）
+│   │   └── src/
+│   │       ├── lib.rs         # run(settings) / init_tracing / check_auth_password（供 app 复用）
+│   │       ├── main.rs        # 薄入口：加载配置 → runtime → server::run
+│   │       ├── config.rs      # Settings + MemorySource + 多路径文件 + 环境变量
+│   │       ├── auth.rs        # Basic Auth 校验（三通道共用）
+│   │       ├── state.rs       # AppState（组合 service 上下文 + 配置）
+│   │       ├── tls.rs         # rustls HTTPS 装配
+│   │       └── handlers/
+│   │           ├── http.rs    # HTTP REST handler
+│   │           ├── ws.rs      # WS handler
+│   │           └── sse.rs     # SSE handler
+│   ├── client/                # 客户端 crate（Form 3 核心，纯库无 GUI）
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── config.rs      # ClientConfig + load()（config-rs [client] 节）
+│   │       ├── clipboard.rs   # ClipboardAdapter trait + arboard 实现（自写抑制）
+│   │       ├── transport.rs   # WsTransport / HttpTransport（统一 Transport trait）
+│   │       └── sync.rs        # SyncEngine（轮询 + 远端事件，hash 去重 + 回声抑制）
+│   └── app/                   # 统一二进制 crate（三种形态入口）
+│       ├── default.toml
 │       └── src/
-│           ├── main.rs        # 启动、路由装配、通道选择
-│           ├── config.rs      # Settings + MemorySource + 多路径文件 + 环境变量
-│           ├── auth.rs        # Basic Auth 校验（三通道共用）
-│           ├── state.rs       # AppState（组合 service 上下文 + 配置）
-│           └── handlers/
-│               ├── http.rs    # HTTP REST handler
-│               └── ws.rs      # WS handler
+│           ├── main.rs        # clap 子命令：server / client / desktop
+│           ├── desktop.rs     # Form 2：iced UI 主线程 + 后台 tokio（server + client）
+│           ├── ui.rs          # iced 窗口 + channel 桥接（feature tray）
+│           └── tray.rs        # tray-icon 托盘（feature tray）
 ```
+
+依赖方向：`server → service → store → domain`；`client → domain`；`app → server + client`。
 
 ```
 handler 层状态（server crate）：
 ┌─────────────────────────────────────────┐
 │ AppState                                │
 │  clipboard: ClipboardContext            │
-│    ├─ broadcast: broadcast::Sender<Profile>  // 变更广播（三通道共用）
+│    ├─ broadcast: broadcast::Sender<ClipboardEvent> // 变更广播（三通道共用）
 │    ├─ current:   Arc<RwLock<Option<Profile>>>// 当前剪贴板缓存
 │    └─ store:     Arc<dyn Storage>            // 抽象存储（后端可插拔）
 │  auth:      AuthConfig                  // 认证配置
 │  clipboard_cfg: ClipboardConfig         // 帧大小/心跳/超时配置
 └─────────────────────────────────────────┘
 ```
+
+### 8.5 三种部署形态与构建
+
+同一代码库产出两种二进制，覆盖三种部署形态：
+
+| 形态 | 二进制 | 子命令 | 适用场景 |
+|---|---|---|---|
+| Form 1 仅服务器 | `server` 或 `ximed server` | server | 树莓派 / 云服务器，低性能部署 |
+| Form 2 桌面（server + client） | `ximed desktop` | desktop | 桌面电脑，局域网内手机同步 |
+| Form 3 仅客户端 | `ximed client` | client | 桌面电脑连远程服务器 |
+
+**构建命令**：
+
+```bash
+# Form 1：仅服务器（最小体积，无 GUI 依赖）
+cargo build --release -p server
+# 产物：target/release/server（约 3MB）
+
+# Form 2 / Form 3：统一二进制（默认带 tray feature，含 vizia 窗口 + 托盘）
+cargo build --release -p app
+# 产物：target/release/ximed（约 21MB，含 skia 桌面 UI）
+# 用法：ximed desktop   （Form 2：同进程 server + client + 托盘）
+#       ximed client    （Form 3：仅客户端 + 托盘，连远程服务器）
+#       ximed server    （Form 1：也可经统一二进制启动）
+
+# 精简构建：仅 server / client（无 GUI，4MB）——Form 1 低性能设备可选
+cargo build --release -p app --no-default-features
+# 注意：此构建 desktop 子命令不可用，client 退化为纯 daemon（无托盘）
+```
+
+**feature 开关**（`app` crate）：
+
+```toml
+[features]
+default = ["tray"]
+tray = ["dep:tray-icon", "dep:muda", "dep:iced"]  # 桌面 UI + 托盘
+```
+
+- `tray`（默认）：client / desktop 形态带 iced 窗口 + tray-icon 托盘
+- 关闭 `tray`：仅服务 Form 1 精简部署（树莓派），client 退化为纯 daemon
+
+**UI 框架说明**：桌面窗口使用 **iced 0.14**（纯 Rust + tiny-skia 软渲染），编译/链接速度远快于 skia 系框架；跨线程事件经 std mpsc channel + `Subscription::run_with` 注入 iced 事件循环。托盘使用 tray-icon + muda（事件经独立线程轮询，channel 转发）。
+
+**跨平台构建**（树莓派 Form 1）：
+
+```bash
+rustup target add aarch64-unknown-linux-musl
+brew install filosottile/musl-cross/musl-cross   # macOS 交叉编译器
+cargo build-rpi                                   # alias：release + aarch64 musl
+# 或 cargo build --release --target aarch64-unknown-linux-musl
+```
+
+> 桌面 GUI 形态（vizia/skia）只随 `app` crate 的 `tray` feature 编译；`server` crate 零 GUI 依赖，保持低端设备可构建/可运行。
 
 ## 9. Xime 侧集成设计（最小改动清单）
 
