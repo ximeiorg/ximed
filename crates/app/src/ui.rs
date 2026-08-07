@@ -18,9 +18,12 @@
 
 use client::config::ClientConfig;
 use client::history::HistoryItem;
-use iced::widget::{Radio, TextInput, button, column, container, row, rule, scrollable, text};
+use iced::font::Weight;
+use iced::widget::{
+    Space, TextInput, button, column, container, image, row, scrollable, text, text_input,
+};
 use iced::{
-    Alignment, Background, Border, Color, Element, Length, Subscription, Task, Theme, border,
+    Alignment, Background, Border, Color, Element, Font, Length, Subscription, Task, Theme, border,
 };
 
 use crate::settings::{AppSettings, SyncMode};
@@ -85,10 +88,14 @@ pub enum Message {
     Backend(UiMsg),
     /// 窗口已打开（记录 window id，供显示/隐藏控制）。
     WindowOpened(iced::window::Id),
+    /// 窗口大小变化（用于历史卡片换行行数估算）。
+    WindowResized(iced::Size),
     /// 窗口关闭请求（点红叉 → 隐藏到托盘而非退出）。
     WindowCloseRequested(iced::window::Id),
     /// 切换到某个面板。
     SelectPanel(Panel),
+    /// 展开/收起某条剪贴板历史卡片。
+    ToggleHistoryItem(u64),
     /// 启动本地 server。
     ServerStart,
     /// 重启本地 server。
@@ -128,6 +135,8 @@ pub struct UiState {
     pub panel: Panel,
     /// 历史列表（动态）。
     pub history: Vec<HistoryItem>,
+    /// 展开的历史条目序号（seq；点击卡片展开/收起，只允许一个展开）。
+    pub expanded_history: Option<u64>,
     /// 是否显示服务器控制区（desktop 模式 true，client-only false）。
     pub local_server: bool,
     /// 配置目录路径（打开文件管理器用）。
@@ -150,6 +159,8 @@ pub struct UiState {
     tx: UiSender,
     /// 主窗口 id（首次打开时记录，供显示/隐藏控制）。
     window_id: Option<iced::window::Id>,
+    /// 主窗口宽度（逻辑像素），用于估算历史卡片内容是否超过 3 行。
+    window_width: f32,
     /// 托盘是否已创建（首个 Backend 消息时创建，主线程）。
     tray_started: bool,
 }
@@ -171,6 +182,7 @@ impl UiState {
             engine_status: "starting…".to_string(),
             panel: Panel::Status,
             history: Vec::new(),
+            expanded_history: None,
             local_server,
             config_dir,
             sync_mode: app_settings.mode,
@@ -182,6 +194,7 @@ impl UiState {
             cmd_tx,
             tx,
             window_id: None,
+            window_width: 1024.0,
             tray_started: false,
         }
     }
@@ -235,10 +248,11 @@ pub fn run_ui(
         .run()
 }
 
-/// 窗口事件订阅：记录窗口 id（打开时）、拦截关闭请求（隐藏到托盘）。
+/// 窗口事件订阅：记录窗口 id（打开时）、窗口尺寸、拦截关闭请求（隐藏到托盘）。
 fn window_events() -> Subscription<Message> {
     Subscription::batch([
         iced::window::open_events().map(Message::WindowOpened),
+        iced::window::resize_events().map(|(_id, size)| Message::WindowResized(size)),
         iced::window::close_requests().map(Message::WindowCloseRequested),
     ])
 }
@@ -246,9 +260,11 @@ fn window_events() -> Subscription<Message> {
 /// 固定主题（状态无关）。
 fn theme(_state: &UiState) -> iced::Theme {
     let mut palette = iced::theme::Palette::TOKYO_NIGHT;
-    palette.background = Color::from_rgb8(0x12, 0x13, 0x1c);
-    palette.text = Color::from_rgb8(0xcd, 0xd6, 0xf4);
-    palette.primary = Color::from_rgb8(0x7a, 0xa2, 0xf7);
+    palette.background = BG;
+    palette.text = TEXT_MAIN;
+    palette.primary = ACCENT;
+    palette.success = GREEN;
+    palette.danger = RED;
     Theme::custom(String::from("ximed"), palette)
 }
 
@@ -293,6 +309,9 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
         Message::WindowOpened(id) => {
             state.window_id = Some(id);
         }
+        Message::WindowResized(size) => {
+            state.window_width = size.width;
+        }
         Message::WindowCloseRequested(id) => {
             state.window_id = Some(id);
             // 关闭按钮：隐藏到托盘而非退出
@@ -300,6 +319,13 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
         }
         Message::SelectPanel(panel) => {
             state.panel = panel;
+        }
+        Message::ToggleHistoryItem(seq) => {
+            state.expanded_history = if state.expanded_history == Some(seq) {
+                None
+            } else {
+                Some(seq)
+            };
         }
         Message::ServerStart => {
             state.server_status = "starting…".to_string();
@@ -359,6 +385,8 @@ impl UiState {
             return;
         }
         self.tray_started = true;
+        #[cfg(target_os = "macos")]
+        crate::macos::set_dock_icon();
         if let Err(e) = crate::tray::setup(self.tx.clone()) {
             eprintln!("[ximed] tray setup failed: {e}");
             tracing::warn!("tray setup failed: {e}");
@@ -383,63 +411,74 @@ fn hide_window(state: &UiState) -> Task<Message> {
 }
 
 // ---------------------------------------------------------------------------
-// 现代化样式：大圆角卡片、柔和配色
+// 现代化样式：Tailwind 风格（zinc 深色 + indigo 主色，圆角卡片、胶囊、柔和分层）
 // ---------------------------------------------------------------------------
 
-/// 主题颜色常量。
-const SURFACE: Color = Color::from_rgb8(0x1a, 0x1b, 0x26); // 卡片底色
-const SURFACE_ALT: Color = Color::from_rgb8(0x16, 0x17, 0x22); // 次级面板
-const TEXT_MUTED: Color = Color::from_rgb8(0x8b, 0x93, 0xad);
-const TEXT_MAIN: Color = Color::from_rgb8(0xcd, 0xd6, 0xf4);
-const ACCENT: Color = Color::from_rgb8(0x7a, 0xa2, 0xf7); // 主蓝
-const ACCENT_DIM: Color = Color::from_rgb8(0x35, 0x3b, 0x50);
-const GREEN: Color = Color::from_rgb8(0x9e, 0xce, 0x6a);
-const RED: Color = Color::from_rgb8(0xf7, 0x76, 0x8e);
-const BORDER: Color = Color::from_rgb8(0x2a, 0x2d, 0x3e);
+/// 主题颜色常量（zinc 色阶 + indigo 强调色，贴近 Tailwind dark UI）。
+const BG: Color = Color::from_rgb8(0x0a, 0x0a, 0x0c); // 窗口底色 zinc-950
+const SURFACE: Color = Color::from_rgb8(0x15, 0x15, 0x18); // 卡片/侧栏 zinc-900
+const SURFACE_HOVER: Color = Color::from_rgb8(0x22, 0x22, 0x27); // 悬停 zinc-800
+const BORDER: Color = Color::from_rgb8(0x2a, 0x2a, 0x30); // 边框 zinc-800
+const BORDER_STRONG: Color = Color::from_rgb8(0x3f, 0x3f, 0x46); // 边框强调 zinc-700
+const TEXT_MAIN: Color = Color::from_rgb8(0xf4, 0xf4, 0xf5); // 主文本 zinc-100
+const TEXT_MUTED: Color = Color::from_rgb8(0xa1, 0xa1, 0xaa); // 次级文本 zinc-400
+const TEXT_FAINT: Color = Color::from_rgb8(0x71, 0x71, 0x7a); // 弱化文本 zinc-500
+const ACCENT: Color = Color::from_rgb8(0x81, 0x8c, 0xf8); // 主色 indigo-400（深底可读）
+const ACCENT_STRONG: Color = Color::from_rgb8(0x63, 0x66, 0xf1); // 主色填充 indigo-500
+const ACCENT_DIM: Color = Color::from_rgba8(0x63, 0x66, 0xf1, 0.18); // 主色浅底（active 导航）
+const GREEN: Color = Color::from_rgb8(0x34, 0xd3, 0x99); // 成功 emerald-400
+const GREEN_DIM: Color = Color::from_rgba8(0x34, 0xd3, 0x99, 0.15);
+const RED: Color = Color::from_rgb8(0xfb, 0x71, 0x85); // 危险 rose-400
+const RED_DIM: Color = Color::from_rgba8(0xfb, 0x71, 0x85, 0.15);
 
-const RADIUS: f32 = 14.0;
+/// 圆角（Tailwind rounded-lg/xl）。
+const RADIUS_LG: f32 = 12.0;
+const RADIUS_MD: f32 = 10.0;
+const RADIUS_SM: f32 = 8.0;
 
-/// 卡片容器样式：大圆角 + 边框。
-fn card(theme: &Theme) -> container::Style {
-    let bg = match theme {
-        Theme::Custom(_) => SURFACE,
-        _ => Color::from_rgb8(0x1a, 0x1b, 0x26),
-    };
+/// 标题字体（semibold）。
+const SEMIBOLD: Font = Font {
+    weight: Weight::Semibold,
+    ..Font::DEFAULT
+};
+
+/// 卡片容器样式：圆角 + 边框 + 柔和底色。
+fn card(_theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(bg)),
+        background: Some(Background::Color(SURFACE)),
         text_color: Some(TEXT_MAIN),
         border: Border {
             color: BORDER,
             width: 1.0,
-            radius: border::radius(RADIUS),
+            radius: border::radius(RADIUS_LG),
         },
         ..container::Style::default()
     }
 }
 
-/// 次级面板：更深的底色，用于侧边栏等次级区域。
-fn surface_alt(_theme: &Theme) -> container::Style {
+/// 侧栏样式：无圆角的整块面板，与窗口底色分层。
+fn sidebar_style(_theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(SURFACE_ALT)),
+        background: Some(Background::Color(SURFACE)),
         text_color: Some(TEXT_MAIN),
         border: Border {
-            color: BORDER,
-            width: 1.0,
-            radius: border::radius(RADIUS),
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: border::radius(0.0),
         },
         ..container::Style::default()
     }
 }
 
-/// 导航按钮样式（由 view 的 [`nav_button`] 使用）。
-fn nav_style(theme: &Theme, _status: button::Status, active: bool) -> button::Style {
+/// 导航按钮样式：active 为主色浅底 + 主色文字；悬停为浅色底。
+fn nav_style(_theme: &Theme, status: button::Status, active: bool) -> button::Style {
     let base = button::Style {
         background: None,
         text_color: TEXT_MUTED,
         border: Border {
             color: Color::TRANSPARENT,
             width: 0.0,
-            radius: border::radius(10.0),
+            radius: border::radius(RADIUS_MD),
         },
         ..button::Style::default()
     };
@@ -447,99 +486,117 @@ fn nav_style(theme: &Theme, _status: button::Status, active: bool) -> button::St
         button::Style {
             background: Some(Background::Color(ACCENT_DIM)),
             text_color: ACCENT,
-            border: Border {
-                color: Color::TRANSPARENT,
-                width: 0.0,
-                radius: border::radius(10.0),
-            },
             ..base
         }
     } else {
-        let _ = theme;
-        base
+        let bg = match status {
+            button::Status::Hovered | button::Status::Pressed => {
+                Some(Background::Color(SURFACE_HOVER))
+            }
+            _ => None,
+        };
+        button::Style {
+            background: bg,
+            ..base
+        }
     }
 }
 
-/// 主要操作按钮（开启/保存）：主色填充 + 圆角。
-fn primary_button(theme: &Theme, status: button::Status) -> button::Style {
-    let _ = theme;
-    let mut style = button::Style {
-        background: Some(Background::Color(ACCENT)),
-        text_color: Color::from_rgb8(0x0b, 0x0f, 0x1c),
+/// 主要操作按钮（开启/保存）：indigo 填充 + 白色文字。
+fn primary_button(_theme: &Theme, status: button::Status) -> button::Style {
+    let bg = match status {
+        button::Status::Hovered => Color::from_rgb8(0x81, 0x8c, 0xf8),
+        button::Status::Pressed => Color::from_rgb8(0x4f, 0x52, 0xe4),
+        _ => ACCENT_STRONG,
+    };
+    button::Style {
+        background: Some(Background::Color(bg)),
+        text_color: Color::WHITE,
         border: Border {
             color: Color::TRANSPARENT,
             width: 0.0,
-            radius: border::radius(10.0),
+            radius: border::radius(RADIUS_MD),
         },
         ..button::Style::default()
-    };
-    match status {
-        button::Status::Hovered => {
-            style.background = Some(Background::Color(Color::from_rgb8(0x8b, 0xb0, 0xfa)));
-        }
-        button::Status::Pressed => {
-            style.background = Some(Background::Color(Color::from_rgb8(0x66, 0x8d, 0xe3)));
-        }
-        _ => {}
     }
-    style
 }
 
-/// 停止按钮：红色填充 + 圆角。
-fn stop_button(theme: &Theme, status: button::Status) -> button::Style {
-    let _ = theme;
-    let mut style = button::Style {
-        background: Some(Background::Color(RED)),
-        text_color: Color::from_rgb8(0x1a, 0x1b, 0x26),
+/// 停止按钮：rose 填充 + 白色文字。
+fn stop_button(_theme: &Theme, status: button::Status) -> button::Style {
+    let bg = if status == button::Status::Hovered {
+        Color::from_rgb8(0xff, 0x8f, 0xa3)
+    } else {
+        RED
+    };
+    button::Style {
+        background: Some(Background::Color(bg)),
+        text_color: Color::WHITE,
         border: Border {
             color: Color::TRANSPARENT,
             width: 0.0,
-            radius: border::radius(10.0),
+            radius: border::radius(RADIUS_MD),
         },
         ..button::Style::default()
-    };
-    if status == button::Status::Hovered {
-        style.background = Some(Background::Color(Color::from_rgb8(0xff, 0x8f, 0xa3)));
     }
-    style
 }
 
-/// 次要操作按钮：边框 + 圆角。
-fn secondary_button(theme: &Theme, status: button::Status) -> button::Style {
-    let _ = theme;
-    let mut style = button::Style {
-        background: None,
+/// 次要操作按钮：透明底 + 边框，悬停浅色底。
+fn secondary_button(_theme: &Theme, status: button::Status) -> button::Style {
+    let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+    button::Style {
+        background: if hovered {
+            Some(Background::Color(SURFACE_HOVER))
+        } else {
+            None
+        },
         text_color: TEXT_MAIN,
         border: Border {
-            color: BORDER,
+            color: BORDER_STRONG,
             width: 1.0,
-            radius: border::radius(10.0),
+            radius: border::radius(RADIUS_MD),
         },
         ..button::Style::default()
-    };
-    if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-        style.background = Some(Background::Color(ACCENT_DIM));
     }
-    style
 }
 
-/// 危险按钮（退出）：透明底 + 红色文字 + 悬停红边。
-fn danger_button(theme: &Theme, status: button::Status) -> button::Style {
-    let _ = theme;
-    let mut style = button::Style {
-        background: None,
+/// 危险按钮（退出）：透明底 + rose 文字 + 悬停浅红底。
+fn danger_button(_theme: &Theme, status: button::Status) -> button::Style {
+    let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+    button::Style {
+        background: if hovered {
+            Some(Background::Color(RED_DIM))
+        } else {
+            None
+        },
         text_color: RED,
         border: Border {
             color: Color::TRANSPARENT,
             width: 0.0,
-            radius: border::radius(10.0),
+            radius: border::radius(RADIUS_MD),
         },
         ..button::Style::default()
-    };
-    if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-        style.background = Some(Background::Color(Color { a: 0.12, ..RED }));
     }
-    style
+}
+
+/// 文本输入框样式：深色底 + 边框，聚焦时主色描边。
+fn input_style(_theme: &Theme, status: text_input::Status) -> text_input::Style {
+    let border_color = match status {
+        text_input::Status::Focused { .. } => ACCENT,
+        text_input::Status::Hovered => BORDER_STRONG,
+        _ => BORDER,
+    };
+    text_input::Style {
+        background: Background::Color(SURFACE),
+        border: Border {
+            color: border_color,
+            width: 1.0,
+            radius: border::radius(RADIUS_MD),
+        },
+        icon: TEXT_MUTED,
+        placeholder: TEXT_FAINT,
+        value: TEXT_MAIN,
+        selection: Color::from_rgba8(0x63, 0x66, 0xf1, 0.35),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -547,25 +604,25 @@ fn danger_button(theme: &Theme, status: button::Status) -> button::Style {
 // ---------------------------------------------------------------------------
 
 fn view(state: &UiState) -> Element<'_, Message> {
-    // 左分栏：面板导航
+    // 左分栏：品牌 + 面板导航
     let mut nav = column![
-        text("ximed")
-            .size(20)
-            .color(TEXT_MAIN)
-            .font(iced::Font::DEFAULT),
-        text("剪贴板同步").size(11).color(TEXT_MUTED),
-        rule::horizontal(1),
+        brand(),
+        Space::new().height(20),
+        text("菜单").size(11).color(TEXT_FAINT),
+        Space::new().height(4),
         nav_button("状态", Panel::Status, state.panel),
         nav_button("剪贴板历史", Panel::History, state.panel),
-        rule::horizontal(1),
     ]
-    .spacing(6)
-    .padding(12);
+    .spacing(2)
+    .padding([20, 14]);
 
     // 设置面板仅 desktop 形态（存在本地 server 可切换）显示
     if state.local_server {
         nav = nav.push(nav_button("设置", Panel::Settings, state.panel));
     }
+
+    // 侧栏底部：退出
+    nav = nav.push(Space::new().height(Length::Fill));
     nav = nav.push(
         button(text("退出").color(RED))
             .on_press(Message::Quit)
@@ -574,10 +631,9 @@ fn view(state: &UiState) -> Element<'_, Message> {
     );
 
     let sidebar = container(nav)
-        .width(160)
+        .width(200)
         .height(Length::Fill)
-        .padding(10)
-        .style(surface_alt);
+        .style(sidebar_style);
 
     // 右分栏：按面板渲染内容
     let content = match state.panel {
@@ -588,10 +644,33 @@ fn view(state: &UiState) -> Element<'_, Message> {
     let content = container(content)
         .width(Length::Fill)
         .height(Length::Fill)
-        .padding(16)
-        .style(card);
+        .padding(20);
 
-    row![sidebar, content].spacing(12).padding(12).into()
+    row![sidebar, content]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+/// 品牌区：应用图标 + 名称 + 副标题。
+fn brand() -> Element<'static, Message> {
+    // 编译期嵌入应用图标（1024×1024 RGBA），与窗口图标同源。
+    let logo = image(image::Handle::from_bytes(
+        include_bytes!("../assets/icon.png").as_slice(),
+    ))
+    .width(32)
+    .height(32);
+    row![
+        logo,
+        column![
+            text("ximed").size(15).font(SEMIBOLD).color(TEXT_MAIN),
+            text("剪贴板同步").size(11).color(TEXT_MUTED),
+        ]
+        .spacing(1),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center)
+    .into()
 }
 
 fn nav_button(label: &str, panel: Panel, active: Panel) -> Element<'_, Message> {
@@ -599,30 +678,37 @@ fn nav_button(label: &str, panel: Panel, active: Panel) -> Element<'_, Message> 
     button(
         row![
             dot(is_active),
-            text(label).color(if is_active { ACCENT } else { TEXT_MUTED }),
+            text(label)
+                .size(13)
+                .font(if is_active { SEMIBOLD } else { Font::DEFAULT })
+                .color(if is_active { ACCENT } else { TEXT_MUTED }),
         ]
         .spacing(8)
         .align_y(Alignment::Center),
     )
     .on_press(Message::SelectPanel(panel))
     .width(Length::Fill)
-    .padding(10)
+    .padding([8, 10])
     .style(move |theme, status| nav_style(theme, status, is_active))
     .into()
 }
 
-/// 导航项左侧的小圆点指示器。
+/// 导航项左侧的小圆点指示器（active 时主色实心，否则空圆环）。
 fn dot(active: bool) -> Element<'static, Message> {
-    let color = if active { ACCENT } else { Color::TRANSPARENT };
-    container(text("").width(8).height(8))
-        .width(8)
-        .height(8)
+    let color = if active { ACCENT } else { BORDER_STRONG };
+    container(text("").width(7).height(7))
+        .width(7)
+        .height(7)
         .style(move |_| container::Style {
-            background: Some(Background::Color(color)),
+            background: if active {
+                Some(Background::Color(ACCENT))
+            } else {
+                None
+            },
             border: Border {
-                color: Color::TRANSPARENT,
-                width: 0.0,
-                radius: border::radius(4.0),
+                color,
+                width: 1.0,
+                radius: border::radius(999.0),
             },
             ..container::Style::default()
         })
@@ -640,32 +726,49 @@ fn status_view(state: &UiState) -> Element<'_, Message> {
 
     let info_card = container(
         column![
-            text("状态").size(20).color(TEXT_MAIN),
-            text("服务与同步引擎运行情况").size(12).color(TEXT_MUTED),
-            rule::horizontal(1),
+            card_title("服务与同步引擎"),
             stat_row("服务器", server_value, server_up, server_hint(state)),
             stat_row("设备", state.source.clone(), true, None),
             stat_row("同步引擎", state.engine_status.clone(), engine_up, None),
         ]
         .spacing(10)
-        .padding(12),
+        .padding(16),
     )
     .width(Length::Fill)
     .style(card);
 
-    let mut content = column![info_card].spacing(12).padding(8);
+    let mut content = column![
+        panel_header("状态", "服务与同步引擎运行情况"),
+        Space::new().height(8),
+        info_card,
+    ]
+    .spacing(10);
 
     // 服务器控制区：仅本地 server（desktop 形态 + 本地模式）显示；
     // 远程模式 client 连远程 server，本地 server 控制无意义。
     if state.local_server && state.sync_mode == SyncMode::Local {
-        let controls = server_controls(state);
-        content = content.push(controls);
+        content = content.push(server_controls(state));
     }
-    content = content.push(text(&state.config_dir).size(11).color(TEXT_MUTED));
+    content = content.push(text(&state.config_dir).size(11).color(TEXT_FAINT));
     scrollable(content)
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
+}
+
+/// 面板页头：标题 + 副标题。
+fn panel_header<'a>(title: &'a str, subtitle: &'a str) -> Element<'a, Message> {
+    column![
+        text(title).size(20).font(SEMIBOLD).color(TEXT_MAIN),
+        text(subtitle).size(12).color(TEXT_MUTED),
+    ]
+    .spacing(2)
+    .into()
+}
+
+/// 卡片标题。
+fn card_title<'a>(label: &'a str) -> Element<'a, Message> {
+    text(label).size(14).font(SEMIBOLD).color(TEXT_MAIN).into()
 }
 
 /// 服务器状态行的括号提示（按 SyncMode）：
@@ -693,55 +796,99 @@ fn server_hint(state: &UiState) -> Option<(String, Color)> {
 
 /// 本地服务器控制卡片：开启 / 重启 / 关闭 + 打开配置文件目录。
 fn server_controls(state: &UiState) -> Element<'static, Message> {
-    let title = if state.server_running {
+    let running = state.server_running;
+    let title = if running {
         "服务器运行中"
     } else {
         "服务器已停止"
     };
-    let status_dot = stat_dot(state.server_running);
+
+    let status_badge = capsule(if running { "运行中" } else { "已停止" }, running);
 
     let mut btns = row![].spacing(8).align_y(Alignment::Center);
-    if state.server_running {
+    if running {
         btns = btns.push(
             button("重启")
                 .on_press(Message::ServerRestart)
-                .padding(10)
+                .padding([8, 14])
                 .style(secondary_button),
         );
         btns = btns.push(
             button("关闭")
                 .on_press(Message::ServerStop)
-                .padding(10)
+                .padding([8, 14])
                 .style(stop_button),
         );
     } else {
         btns = btns.push(
             button("开启")
                 .on_press(Message::ServerStart)
-                .padding(10)
+                .padding([8, 18])
                 .style(primary_button),
         );
     }
 
     container(
         column![
-            row![status_dot, text(title).size(16).color(TEXT_MAIN)]
-                .spacing(8)
-                .align_y(Alignment::Center),
+            row![
+                status_badge,
+                text(title).size(15).font(SEMIBOLD).color(TEXT_MAIN)
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
             text("本地服务器默认不随应用自动启动，请手动开启。")
                 .size(12)
                 .color(TEXT_MUTED),
             btns,
             button("打开配置文件所在目录")
                 .on_press(Message::OpenConfigDir)
-                .padding(8)
+                .padding([7, 12])
                 .style(secondary_button),
         ]
         .spacing(10)
-        .padding(12),
+        .padding(16),
     )
     .width(Length::Fill)
     .style(card)
+    .into()
+}
+
+/// 状态胶囊：圆角标签，ok 为绿色、否则红色。
+fn capsule<'a>(label: &'a str, ok: bool) -> Element<'a, Message> {
+    let (fg, bg) = if ok {
+        (GREEN, GREEN_DIM)
+    } else {
+        (RED, RED_DIM)
+    };
+    container(
+        row![
+            container(text("").width(6).height(6))
+                .width(6)
+                .height(6)
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(fg)),
+                    border: Border {
+                        color: Color::TRANSPARENT,
+                        width: 0.0,
+                        radius: border::radius(999.0),
+                    },
+                    ..container::Style::default()
+                }),
+            text(label).size(11).color(fg),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    )
+    .padding([3, 10])
+    .style(move |_| container::Style {
+        background: Some(Background::Color(bg)),
+        border: Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: border::radius(999.0),
+        },
+        ..container::Style::default()
+    })
     .into()
 }
 
@@ -755,15 +902,15 @@ fn stat_row(
     let mut content = row![
         stat_dot(ok),
         text(label)
-            .size(14)
+            .size(13)
             .color(TEXT_MUTED)
-            .width(Length::Fixed(80.0)),
-        text(value).size(14).color(TEXT_MAIN),
+            .width(Length::Fixed(72.0)),
+        text(value).size(13).color(TEXT_MAIN),
     ]
-    .spacing(4)
+    .spacing(6)
     .align_y(Alignment::Center);
     if let Some((hint, color)) = hint {
-        content = content.push(text(hint).size(13).color(color));
+        content = content.push(text(hint).size(12).color(color));
     }
     content.into()
 }
@@ -786,102 +933,244 @@ fn stat_dot(ok: bool) -> Element<'static, Message> {
         .into()
 }
 
-fn history_view(state: &UiState) -> Element<'_, Message> {
-    let header = row![
-        text("seq")
-            .size(12)
-            .color(TEXT_MUTED)
-            .width(Length::Fixed(48.0)),
-        text("type")
-            .size(12)
-            .color(TEXT_MUTED)
-            .width(Length::Fixed(72.0)),
-        text("source")
-            .size(12)
-            .color(TEXT_MUTED)
-            .width(Length::Fixed(96.0)),
-        text("content")
-            .size(12)
-            .color(TEXT_MUTED)
-            .width(Length::Fill),
-    ]
-    .spacing(8)
-    .padding(4);
+/// 历史卡片内容区收起时的高度（3 行文本 ≈ 3 × 20px）。
+const HISTORY_CONTENT_HEIGHT: f32 = 60.0;
+/// 历史卡片展开时内容区的最大高度（超出滚动）。
+const HISTORY_EXPANDED_HEIGHT: f32 = 160.0;
 
-    let mut rows = column![
-        text("剪贴板历史").size(20).color(TEXT_MAIN),
-        text("最近同步的剪贴板内容").size(12).color(TEXT_MUTED),
-        rule::horizontal(1),
-        header,
+fn history_view(state: &UiState) -> Element<'_, Message> {
+    let mut col = column![
+        panel_header("剪贴板历史", "最近同步的剪贴板内容，点击卡片展开全文"),
+        Space::new().height(8),
     ]
-    .spacing(8)
-    .padding(4);
+    .spacing(4);
 
     if state.history.is_empty() {
-        rows = rows.push(
+        col = col.push(
             container(
-                text("（暂无历史记录，或服务器未启用 history）")
-                    .size(13)
-                    .color(TEXT_MUTED),
+                column![
+                    text("暂无历史记录")
+                        .size(14)
+                        .font(SEMIBOLD)
+                        .color(TEXT_MUTED),
+                    text("或服务器未启用 history 功能")
+                        .size(12)
+                        .color(TEXT_FAINT),
+                ]
+                .spacing(4)
+                .align_x(Alignment::Center),
             )
-            .padding(12),
+            .width(Length::Fill)
+            .padding(24)
+            .style(card),
         );
     } else {
         for item in &state.history {
-            let preview: String = item.text.chars().take(60).collect();
-            let row_item = row![
-                text(item.seq.to_string())
-                    .size(13)
-                    .color(TEXT_MUTED)
-                    .width(Length::Fixed(48.0)),
-                text(&item.kind)
-                    .size(13)
-                    .color(TEXT_MAIN)
-                    .width(Length::Fixed(72.0)),
-                text(item.source.as_deref().unwrap_or("-"))
-                    .size(13)
-                    .color(TEXT_MAIN)
-                    .width(Length::Fixed(96.0)),
-                text(preview).size(13).color(TEXT_MAIN).width(Length::Fill),
-            ]
-            .spacing(8)
-            .padding(6);
-
-            let card_row =
-                container(row_item)
-                    .width(Length::Fill)
-                    .style(move |_| container::Style {
-                        background: Some(Background::Color(SURFACE_ALT)),
-                        border: Border {
-                            color: BORDER,
-                            width: 1.0,
-                            radius: border::radius(10.0),
-                        },
-                        ..container::Style::default()
-                    });
-            rows = rows.push(card_row);
+            let expanded = state.expanded_history == Some(item.seq);
+            col = col.push(history_card(item, expanded, state.window_width));
         }
     }
-    scrollable(rows)
+
+    scrollable(col)
         .width(Length::Fill)
         .height(Length::Fill)
+        .style(history_scroll_style)
         .into()
+}
+
+/// 历史列表滚动条样式：窄滚动条 + 半透明圆角滑块，贴合深色主题。
+fn history_scroll_style(theme: &Theme, status: scrollable::Status) -> scrollable::Style {
+    let mut style = scrollable::default(theme, status);
+    let rail = scrollable::Rail {
+        background: None,
+        border: Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: border::radius(999.0),
+        },
+        scroller: scrollable::Scroller {
+            background: Background::Color(Color {
+                a: 0.35,
+                ..ACCENT_DIM
+            }),
+            border: Border {
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: border::radius(999.0),
+            },
+        },
+    };
+    style.vertical_rail = rail;
+    style.horizontal_rail = rail;
+    style
+}
+
+/// 单条历史卡片：内容为主、最多 3 行，底部以 tag 展示元信息；点击展开全文。
+fn history_card(item: &HistoryItem, expanded: bool, window_width: f32) -> Element<'_, Message> {
+    // 仅当内容超过 3 行时才允许展开：按内容区宽度估算换行行数。
+    let has_more = history_has_more(&item.text, window_width);
+
+    // 内容区：收起时固定高度 + 裁剪（最多 3 行）；展开时全文（限高滚动，隐藏内部滚动条避免浮在文字上）
+    let content = if expanded {
+        Element::from(
+            container(
+                scrollable(text(&item.text).size(13).color(TEXT_MAIN))
+                    .height(Length::Fixed(HISTORY_EXPANDED_HEIGHT))
+                    .direction(scrollable::Direction::Vertical(
+                        scrollable::Scrollbar::hidden(),
+                    )),
+            )
+            .width(Length::Fill)
+            .clip(true),
+        )
+    } else {
+        Element::from(
+            container(text(&item.text).size(13).color(TEXT_MAIN))
+                .width(Length::Fill)
+                .height(Length::Fixed(HISTORY_CONTENT_HEIGHT))
+                .clip(true),
+        )
+    };
+
+    // 底部 tag 行：类型 / 来源 / 序号 / 时间
+    let source = item.source.clone().unwrap_or_else(|| "unknown".to_string());
+    let time = format_time(item.created_at);
+    let tags = row![
+        history_tag(item.kind.clone()),
+        history_tag(source),
+        history_tag(format!("#{}", item.seq)),
+        history_tag(time),
+    ]
+    .spacing(6);
+
+    // 展开/收起提示仅在有更多内容时显示；无更多内容时整卡不可点击。
+    let mut footer = iced::widget::Row::new()
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .push(tags);
+    if has_more {
+        footer = footer.push(
+            text(if expanded { "收起 ▲" } else { "展开 ▼" })
+                .size(11)
+                .color(ACCENT),
+        );
+    }
+
+    let card = column![content, footer]
+        .spacing(8)
+        .align_x(Alignment::Start);
+
+    let mut btn = button(card)
+        .width(Length::Fill)
+        .height(Length::Shrink)
+        .padding(10)
+        .style(history_card_style);
+    if has_more {
+        btn = btn.on_press(Message::ToggleHistoryItem(item.seq));
+    }
+    btn.into()
+}
+
+/// 估算文本在历史卡片内容区中会占据的行数（内容区宽度 = 窗口宽度 - 固定开销）。
+fn history_estimated_lines(text: &str, window_width: f32) -> usize {
+    // 布局开销：sidebar(160) + row padding(12×2) + 内容卡 padding(16×2) + 卡片按钮 padding(10×2)
+    // + 滚动条余量；13px 字号下平均字符宽约 7px（中英文混合取保守值）。
+    const LAYOUT_OVERHEAD: f32 = 160.0 + 24.0 + 32.0 + 20.0 + 16.0;
+    const AVG_CHAR_WIDTH: f32 = 7.0;
+    let content_width = (window_width - LAYOUT_OVERHEAD).max(120.0);
+    let chars_per_line = (content_width / AVG_CHAR_WIDTH).floor() as usize;
+
+    let mut lines = 0usize;
+    for seg in text.split('\n') {
+        // 每段按字符数估算换行后的行数；空段也算 1 行。
+        let chars = seg.chars().count();
+        lines += if chars == 0 {
+            1
+        } else {
+            chars.div_ceil(chars_per_line.max(1))
+        };
+    }
+    lines
+}
+
+/// 内容是否超过 3 行（决定是否提供展开）。
+fn history_has_more(text: &str, window_width: f32) -> bool {
+    history_estimated_lines(text, window_width) > 3
+}
+
+/// 历史卡片按钮样式：卡片底色 + 边框，悬停时高亮。
+fn history_card_style(_theme: &Theme, status: button::Status) -> button::Style {
+    let mut style = button::Style {
+        background: Some(Background::Color(SURFACE)),
+        text_color: TEXT_MAIN,
+        border: Border {
+            color: BORDER,
+            width: 1.0,
+            radius: border::radius(RADIUS_LG),
+        },
+        ..button::Style::default()
+    };
+    if matches!(status, button::Status::Hovered) {
+        style.background = Some(Background::Color(SURFACE_HOVER));
+        style.border = Border {
+            color: BORDER_STRONG,
+            width: 1.0,
+            radius: border::radius(RADIUS_LG),
+        };
+    }
+    style
+}
+
+/// 胶囊 tag：元信息小标签。
+fn history_tag(label: String) -> Element<'static, Message> {
+    container(text(label).size(11).color(TEXT_MUTED))
+        .padding([3, 8])
+        .style(|_theme| container::Style {
+            background: Some(Background::Color(SURFACE_HOVER)),
+            border: Border {
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: border::radius(999.0),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// 相对时间：Unix 秒 → "刚刚 / N 分钟前 / N 小时前 / N 天前"。
+fn format_time(unix: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let diff = now - unix;
+    if diff < 60 {
+        "刚刚".to_string()
+    } else if diff < 3600 {
+        format!("{} 分钟前", diff / 60)
+    } else if diff < 86400 {
+        format!("{} 小时前", diff / 3600)
+    } else {
+        format!("{} 天前", diff / 86400)
+    }
 }
 
 /// 设置面板：连接模式（本地 / 远程 server）+ 远程服务器表单 + 保存。
 fn settings_view(state: &UiState) -> Element<'_, Message> {
-    let mode_local = Radio::new(
-        "本地服务器",
-        SyncMode::Local,
-        Some(state.sync_mode),
-        Message::SettingsMode,
-    );
-    let mode_remote = Radio::new(
-        "远程服务器",
-        SyncMode::Remote,
-        Some(state.sync_mode),
-        Message::SettingsMode,
-    );
+    let mode_local = seg_button("本地服务器", SyncMode::Local, state.sync_mode);
+    let mode_remote = seg_button("远程服务器", SyncMode::Remote, state.sync_mode);
+    let segmented =
+        container(row![mode_local, mode_remote].spacing(2).padding(2)).style(|_theme| {
+            container::Style {
+                background: Some(Background::Color(SURFACE_HOVER)),
+                border: Border {
+                    color: Color::TRANSPARENT,
+                    width: 0.0,
+                    radius: border::radius(RADIUS_MD),
+                },
+                ..container::Style::default()
+            }
+        });
 
     let hint = match state.sync_mode {
         SyncMode::Local => text("client 自动连接本机 server，地址/端口跟随 server 配置。")
@@ -892,46 +1181,91 @@ fn settings_view(state: &UiState) -> Element<'_, Message> {
             .color(TEXT_MUTED),
     };
 
-    let mut body = column![
-        text("设置").size(20).color(TEXT_MAIN),
-        text("连接模式与远程服务器").size(12).color(TEXT_MUTED),
-        rule::horizontal(1),
-        row![mode_local, mode_remote].spacing(16),
-        hint,
-    ]
-    .spacing(10)
-    .padding(12);
+    let mut body = column![card_title("连接模式"), segmented, hint,].spacing(10);
 
     if state.sync_mode == SyncMode::Remote {
         body = body.push(
             column![
-                text("远程服务器地址").size(12).color(TEXT_MUTED),
+                Space::new().height(6),
+                field_label("远程服务器地址"),
                 TextInput::new("https://example.com:8443", &state.remote_url)
-                    .on_input(Message::SettingsUrl),
-                text("用户名").size(12).color(TEXT_MUTED),
-                TextInput::new("alice", &state.remote_username).on_input(Message::SettingsUsername),
-                text("密码").size(12).color(TEXT_MUTED),
+                    .on_input(Message::SettingsUrl)
+                    .padding(10)
+                    .style(input_style),
+                Space::new().height(2),
+                field_label("用户名"),
+                TextInput::new("alice", &state.remote_username)
+                    .on_input(Message::SettingsUsername)
+                    .padding(10)
+                    .style(input_style),
+                Space::new().height(2),
+                field_label("密码"),
                 TextInput::new("", &state.remote_password)
                     .secure(true)
-                    .on_input(Message::SettingsPassword),
+                    .on_input(Message::SettingsPassword)
+                    .padding(10)
+                    .style(input_style),
             ]
-            .spacing(8),
+            .spacing(6),
         );
     }
 
+    body = body.push(Space::new().height(4));
     body = body.push(
         button("保存并应用")
             .on_press(Message::ApplySettings)
-            .padding(10)
+            .padding([10, 18])
             .style(primary_button),
     );
     body = body.push(text(&state.settings_status).size(12).color(TEXT_MUTED));
 
-    container(body)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .style(card)
-        .into()
+    container(
+        column![
+            panel_header("设置", "连接模式与远程服务器"),
+            Space::new().height(8),
+            container(body).width(Length::Fill).padding(16).style(card),
+        ]
+        .spacing(10),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
+/// 设置表单字段标签。
+fn field_label<'a>(label: &'a str) -> Element<'a, Message> {
+    text(label).size(12).color(TEXT_MUTED).into()
+}
+
+/// 分段选择按钮（Tailwind 风格的 segmented control）。
+fn seg_button<'a>(label: &'a str, mode: SyncMode, current: SyncMode) -> Element<'a, Message> {
+    let active = mode == current;
+    button(
+        text(label)
+            .size(13)
+            .color(if active { TEXT_MAIN } else { TEXT_MUTED }),
+    )
+    .on_press(Message::SettingsMode(mode))
+    .width(Length::Fill)
+    .padding([8, 14])
+    .style(move |_theme, status| {
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        button::Style {
+            background: if active || hovered {
+                Some(Background::Color(SURFACE))
+            } else {
+                None
+            },
+            text_color: if active { TEXT_MAIN } else { TEXT_MUTED },
+            border: Border {
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: border::radius(RADIUS_SM),
+            },
+            ..button::Style::default()
+        }
+    })
+    .into()
 }
 #[derive(Clone)]
 struct RxId(std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<UiMsg>>>);
@@ -973,4 +1307,66 @@ fn backend_events(
             }
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_time_buckets() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        assert_eq!(format_time(now), "刚刚");
+        assert_eq!(format_time(now - 30), "刚刚");
+        assert_eq!(format_time(now - 120), "2 分钟前");
+        assert_eq!(format_time(now - 3600), "1 小时前");
+        assert_eq!(format_time(now - 7200), "2 小时前");
+        assert_eq!(format_time(now - 86400), "1 天前");
+        assert_eq!(format_time(now - 3 * 86400), "3 天前");
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    const WIDTH: f32 = 1024.0;
+
+    #[test]
+    fn short_content_not_expandable() {
+        assert!(!history_has_more("hello", WIDTH));
+        assert!(!history_has_more("short text with a few words", WIDTH));
+    }
+
+    #[test]
+    fn exactly_three_lines_not_expandable() {
+        let text = format!("{}\n{}\n{}", "line one", "line two", "line three");
+        assert_eq!(history_estimated_lines(&text, WIDTH), 3);
+        assert!(!history_has_more(&text, WIDTH));
+    }
+
+    #[test]
+    fn more_than_three_lines_expandable() {
+        let text = "one\ntwo\nthree\nfour";
+        assert_eq!(history_estimated_lines(text, WIDTH), 4);
+        assert!(history_has_more(text, WIDTH));
+    }
+
+    #[test]
+    fn long_wrapped_line_counts_multiple_lines() {
+        // 宽 1024 → 内容约 772px → 每行约 110 字符；300 字符应跨 3 行。
+        let text = "x".repeat(300);
+        let lines = history_estimated_lines(&text, WIDTH);
+        assert!(lines >= 3, "expected >=3 lines, got {lines}");
+        assert!(history_has_more(&text, WIDTH) || lines <= 3);
+    }
+
+    #[test]
+    fn empty_text_not_expandable() {
+        assert!(!history_has_more("", WIDTH));
+        assert!(!history_has_more("\n", WIDTH));
+    }
 }

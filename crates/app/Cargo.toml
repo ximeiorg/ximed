@@ -26,7 +26,9 @@ path = "src/bin/ximed-client.rs"
 [features]
 default = ["tray"]
 # 托盘/窗口 UI（桌面形态）；server-only 构建可关掉以减小体积
-tray = ["dep:tray-icon", "dep:muda", "dep:iced"]
+tray = ["dep:tray-icon", "dep:muda", "dep:iced", "macos-dock-icon"]
+# macOS 运行时设置 Dock 图标（cargo run 裸跑时 .icns 不生效，需运行时 setApplicationIconImage:）
+macos-dock-icon = ["dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]
 
 # cargo-packager 打包配置（CI nightly 生成 desktop 安装包）。
 # version / out-dir / binaries-dir 等由 cargo-packager 从 cargo metadata 自动填充，
@@ -39,7 +41,7 @@ homepage = ""
 authors = ["ximed"]
 category = "Utility"
 license-file = "../../LICENSE"
-icons = ["assets/icon.png", "assets/icon.ico"]
+icons = ["assets/icon.png", "assets/icon.ico", "assets/icon.icns"]
 binaries = [{ path = "ximed-desktop", main = true }]
 
 [package.metadata.packager.deb]
@@ -73,6 +75,11 @@ iced = { version = "0.14", optional = true, default-features = false, features =
 # 托盘（feature tray）；Linux 需要 gtk 平台实现（muda/tray-icon 默认 feature 已关闭，需显式启用）
 tray-icon = { version = "0.24", optional = true, default-features = false, features = ["gtk"] }
 muda = { version = "0.19", optional = true, default-features = false, features = ["gtk"] }
+# macOS 运行时设置 Dock 图标（cargo run 裸跑时 .icns 不生效，需运行时 setApplicationIconImage:）
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3", optional = true }
+objc2-foundation = { version = "0.3", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
