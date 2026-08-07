@@ -24,10 +24,12 @@ pub mod tray;
 #[cfg(feature = "tray")]
 pub mod ui;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use client::clipboard::SystemClipboard;
 use client::config::ClientConfig;
+use client::settings::SyncSettings;
 use client::sync::SyncEngine;
 
 /// Form 1：仅服务器。行为与原 `ximed server` 子命令一致。
@@ -59,6 +61,11 @@ pub fn run_client() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     };
     server::init_tracing("info");
+    // client-only 形态无设置面板：默认开启同步（产品默认主开关关，但 CLI 形态显式启动即代表启用）
+    let sync = SyncSettings {
+        switch_on: true,
+        ..SyncSettings::default()
+    };
 
     #[cfg(feature = "tray")]
     {
@@ -78,7 +85,23 @@ pub fn run_client() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             };
             rt.block_on(async {
                 let cb = Arc::new(SystemClipboard::new().expect("failed to init clipboard"));
-                let mut engine = SyncEngine::new(cfg.clone(), password.clone(), cb);
+                let mut engine = SyncEngine::new(cfg.clone(), sync.clone(), password.clone(), cb);
+                // 本地历史：引擎记录 + 历史面板读取（client-only 无 server，纯本地）
+                let local_history = client::history_store::LocalHistory::open(
+                    PathBuf::from("client-history.db"),
+                    100,
+                )
+                .unwrap_or_else(|| {
+                    client::history_store::LocalHistory::open(
+                        std::env::temp_dir().join("ximed-client-history.db"),
+                        100,
+                    )
+                    .expect("local history must open in temp dir as fallback")
+                });
+                let history_for_engine = local_history.clone();
+                engine.set_history_handler(Arc::new(move |profile: &domain::profile::Profile| {
+                    history_for_engine.record(profile);
+                }));
                 let tx_engine = tx.clone();
                 let source = cfg.source.clone();
                 let _ = tx_engine.send(ui::UiMsg::EngineStarted {
@@ -88,16 +111,15 @@ pub fn run_client() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     engine.run().await;
                     let _ = tx_engine.send(ui::UiMsg::EngineStopped { source });
                 });
-                // 历史轮询（远程服务器历史列表）
-                let http = client::transport::HttpTransport::new(&cfg, &password);
+                // 历史面板轮询：统一读取客户端本地历史
+                let history = local_history;
                 let tx_history = tx.clone();
                 let history_task = tokio::spawn(async move {
                     let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
                     loop {
                         interval.tick().await;
-                        if let Ok(resp) = http.fetch_history(100).await {
-                            let _ = tx_history.send(ui::UiMsg::History { items: resp.items });
-                        }
+                        let items = history.list(100);
+                        let _ = tx_history.send(ui::UiMsg::History { items });
                     }
                 });
                 tokio::select! {
@@ -126,7 +148,7 @@ pub fn run_client() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
             let clipboard = Arc::new(SystemClipboard::new()?);
-            let mut engine = SyncEngine::new(cfg, password, clipboard);
+            let mut engine = SyncEngine::new(cfg, sync, password, clipboard);
             engine.run().await;
             Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
         })

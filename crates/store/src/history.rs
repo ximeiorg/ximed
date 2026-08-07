@@ -27,11 +27,18 @@ pub struct HistoryEntry {
 /// 用 Mutex 包裹 Connection 以满足 Send+Sync（rusqlite Connection 本身非 Sync）。
 pub struct HistoryRepo {
     conn: Arc<Mutex<Connection>>,
+    /// 历史保留上限（超出后每次 insert 修剪最旧记录）。
+    max_items: u64,
 }
 
 impl HistoryRepo {
     /// 打开（或创建）历史数据库并建表。
     pub fn open(db_path: impl Into<PathBuf>) -> rusqlite::Result<Self> {
+        Self::open_with_limit(db_path, 100)
+    }
+
+    /// 打开（或创建）历史数据库并建表，指定保留条数上限。
+    pub fn open_with_limit(db_path: impl Into<PathBuf>, max_items: u64) -> rusqlite::Result<Self> {
         let path = db_path.into();
         let conn = Connection::open(&path)?;
         conn.execute_batch(
@@ -49,10 +56,11 @@ impl HistoryRepo {
         )?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            max_items: max_items.max(1),
         })
     }
 
-    /// 追加一条历史记录。
+    /// 追加一条历史记录；超过保留上限时删除最旧的记录。
     pub fn insert(&self, entry: &HistoryEntry) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -69,6 +77,16 @@ impl HistoryRepo {
                 entry.source,
                 entry.created_at,
             ],
+        )?;
+        // 保留上限修剪：仅保留最新的 max_items 条（按 seq 倒序）。
+        // seq 单调递增（广播序号），新插入的 seq 最大，故删除 seq 最小的超出部分。
+        conn.execute(
+            "DELETE FROM clipboard_history
+             WHERE seq IN (
+                 SELECT seq FROM clipboard_history
+                 ORDER BY seq DESC LIMIT -1 OFFSET ?1
+             )",
+            rusqlite::params![self.max_items as i64],
         )?;
         Ok(())
     }
@@ -172,5 +190,37 @@ mod tests {
         let all = repo.list(100, None).unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].text, "v2");
+    }
+
+    #[test]
+    fn insert_prunes_beyond_max_items() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = HistoryRepo::open_with_limit(dir.path().join("h.db"), 3).unwrap();
+        for seq in 1..=5 {
+            repo.insert(&entry(seq, &format!("item{seq}"))).unwrap();
+        }
+        // 保留最新的 3 条（seq 3/4/5），删除最旧的 seq 1/2
+        let all = repo.list(100, None).unwrap();
+        assert_eq!(all.len(), 3, "history must be pruned to max_items");
+        let texts: Vec<_> = all.iter().map(|e| e.text.as_str()).collect();
+        assert_eq!(texts, vec!["item5", "item4", "item3"]);
+    }
+
+    #[test]
+    fn prune_keeps_upserted_seq() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = HistoryRepo::open_with_limit(dir.path().join("h.db"), 2).unwrap();
+        // 同一 seq 重复插入（upsert）不应被修剪掉
+        repo.insert(&entry(1, "v1")).unwrap();
+        repo.insert(&entry(2, "v2")).unwrap();
+        repo.insert(&HistoryEntry {
+            text: "v1-updated".to_string(),
+            ..entry(1, "ignored")
+        })
+        .unwrap();
+        let all = repo.list(100, None).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].text, "v2");
+        assert_eq!(all[1].text, "v1-updated");
     }
 }

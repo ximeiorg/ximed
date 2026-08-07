@@ -3,7 +3,20 @@
 //! 由 `app` crate 从 CLI / 环境变量 / 配置文件构建。敏感项（密码）走环境变量。
 //! 复用 server 的 config-rs 范式：内嵌默认 + 环境变量 + 多路径文件。
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+/// 同步适配器类型（client 直连后端，对标 SyncClipboard adapter）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AdapterKind {
+    /// 连接 ximed server（默认，HTTP/WS 协议通道）。
+    #[default]
+    Server,
+    /// 直连 WebDAV 存储（绕过 ximed server）。
+    WebDav,
+    /// 直连 S3 兼容存储（绕过 ximed server）。
+    S3,
+}
 
 /// client 配置。
 #[derive(Debug, Clone, Deserialize)]
@@ -37,6 +50,42 @@ pub struct ClientConfig {
     /// 是否启用 WS 实时通道（false 则纯 HTTP 轮询）。
     #[serde(default = "default_true")]
     pub ws_enabled: bool,
+    /// 同步适配器：server（默认）/ webdav / s3。
+    #[serde(default)]
+    pub adapter: AdapterKind,
+    /// WebDAV 直连：服务基础地址（如 `https://dav.example.com/xime`）。
+    #[serde(default)]
+    pub webdav_url: String,
+    /// WebDAV 直连：用户名。
+    #[serde(default)]
+    pub webdav_username: String,
+    /// WebDAV 直连：密码来源环境变量名（默认 `XIMED_WEBDAV_PASSWORD`）。
+    #[serde(default = "default_webdav_password_env")]
+    pub webdav_password_env: String,
+    /// WebDAV 直连：密码明文兜底（desktop 设置面板场景；环境变量优先）。
+    #[serde(default)]
+    pub webdav_password: Option<String>,
+    /// S3 直连：端点（path-style，如 `https://s3.example.com`）。
+    #[serde(default)]
+    pub s3_endpoint: String,
+    /// S3 直连：存储桶名。
+    #[serde(default)]
+    pub s3_bucket: String,
+    /// S3 直连：区域。
+    #[serde(default = "default_s3_region")]
+    pub s3_region: String,
+    /// S3 直连：Access Key 来源环境变量名（默认 `XIMED_S3_ACCESS_KEY`）。
+    #[serde(default = "default_s3_access_key_env")]
+    pub s3_access_key_env: String,
+    /// S3 直连：Secret Key 来源环境变量名（默认 `XIMED_S3_SECRET_KEY`）。
+    #[serde(default = "default_s3_secret_key_env")]
+    pub s3_secret_key_env: String,
+    /// S3 直连：Access Key 明文兜底（desktop 设置面板场景；环境变量优先）。
+    #[serde(default)]
+    pub s3_access_key: Option<String>,
+    /// S3 直连：Secret Key 明文兜底（desktop 设置面板场景；环境变量优先）。
+    #[serde(default)]
+    pub s3_secret_key: Option<String>,
 }
 
 impl Default for ClientConfig {
@@ -51,6 +100,18 @@ impl Default for ClientConfig {
             http_fallback_ms: default_poll_ms(),
             heartbeat_secs: default_heartbeat_secs(),
             ws_enabled: default_true(),
+            adapter: AdapterKind::default(),
+            webdav_url: String::new(),
+            webdav_username: String::new(),
+            webdav_password_env: default_webdav_password_env(),
+            webdav_password: None,
+            s3_endpoint: String::new(),
+            s3_bucket: String::new(),
+            s3_region: default_s3_region(),
+            s3_access_key_env: default_s3_access_key_env(),
+            s3_secret_key_env: default_s3_secret_key_env(),
+            s3_access_key: None,
+            s3_secret_key: None,
         }
     }
 }
@@ -62,6 +123,30 @@ impl ClientConfig {
             .ok()
             .filter(|p| !p.is_empty())
             .or_else(|| self.password.clone().filter(|p| !p.is_empty()))
+    }
+
+    /// 读取 WebDAV 直连密码：环境变量优先，配置字段明文兜底。
+    pub fn webdav_password(&self) -> Option<String> {
+        std::env::var(&self.webdav_password_env)
+            .ok()
+            .filter(|p| !p.is_empty())
+            .or_else(|| self.webdav_password.clone().filter(|p| !p.is_empty()))
+    }
+
+    /// 读取 S3 Access Key：环境变量优先，配置字段明文兜底。
+    pub fn s3_access_key(&self) -> Option<String> {
+        std::env::var(&self.s3_access_key_env)
+            .ok()
+            .filter(|s| !s.is_empty())
+            .or_else(|| self.s3_access_key.clone().filter(|s| !s.is_empty()))
+    }
+
+    /// 读取 S3 Secret Key：环境变量优先，配置字段明文兜底。
+    pub fn s3_secret_key(&self) -> Option<String> {
+        std::env::var(&self.s3_secret_key_env)
+            .ok()
+            .filter(|s| !s.is_empty())
+            .or_else(|| self.s3_secret_key.clone().filter(|s| !s.is_empty()))
     }
 
     /// 推导 WS 地址：`http(s)://host:port` → `ws(s)://host:port/sync`。
@@ -111,6 +196,18 @@ impl ClientConfig {
 fn default_password_env() -> String {
     "XIMED_CLIENT_PASSWORD".to_string()
 }
+fn default_webdav_password_env() -> String {
+    "XIMED_WEBDAV_PASSWORD".to_string()
+}
+fn default_s3_region() -> String {
+    "us-east-1".to_string()
+}
+fn default_s3_access_key_env() -> String {
+    "XIMED_S3_ACCESS_KEY".to_string()
+}
+fn default_s3_secret_key_env() -> String {
+    "XIMED_S3_SECRET_KEY".to_string()
+}
 fn default_source() -> String {
     hostname().unwrap_or_else(|| "client".to_string())
 }
@@ -137,14 +234,7 @@ mod tests {
     fn ws_url_derived_from_http() {
         let cfg = ClientConfig {
             server_url: "http://127.0.0.1:8443".to_string(),
-            username: "alice".to_string(),
-            password: None,
-            password_env: "XIMED_CLIENT_PASSWORD".to_string(),
-            source: "t".to_string(),
-            poll_ms: 500,
-            http_fallback_ms: 500,
-            heartbeat_secs: 30,
-            ws_enabled: true,
+            ..ClientConfig::default()
         };
         assert_eq!(cfg.ws_url(), "ws://127.0.0.1:8443/sync");
         assert_eq!(cfg.http_api(), "http://127.0.0.1:8443/api/clipboard");
@@ -165,14 +255,7 @@ mod tests {
         }
         let cfg = ClientConfig {
             server_url: "http://x".to_string(),
-            username: "u".to_string(),
-            password: None,
-            password_env: "XIMED_CLIENT_PASSWORD".to_string(),
-            source: "t".to_string(),
-            poll_ms: 500,
-            http_fallback_ms: 500,
-            heartbeat_secs: 30,
-            ws_enabled: true,
+            ..ClientConfig::default()
         };
         assert_eq!(cfg.password().as_deref(), Some("secret"));
         unsafe {
@@ -188,14 +271,8 @@ mod tests {
         }
         let cfg = ClientConfig {
             server_url: "http://x".to_string(),
-            username: "u".to_string(),
             password: Some("file-secret".to_string()),
-            password_env: "XIMED_CLIENT_PASSWORD".to_string(),
-            source: "t".to_string(),
-            poll_ms: 500,
-            http_fallback_ms: 500,
-            heartbeat_secs: 30,
-            ws_enabled: true,
+            ..ClientConfig::default()
         };
         assert_eq!(cfg.password().as_deref(), Some("file-secret"));
         // 环境变量优先级更高
@@ -205,6 +282,35 @@ mod tests {
         assert_eq!(cfg.password().as_deref(), Some("env-secret"));
         unsafe {
             std::env::remove_var("XIMED_CLIENT_PASSWORD");
+        }
+    }
+
+    #[test]
+    fn direct_adapter_defaults() {
+        let cfg = ClientConfig::default();
+        assert_eq!(cfg.adapter, AdapterKind::Server);
+        assert_eq!(cfg.webdav_password_env, "XIMED_WEBDAV_PASSWORD");
+        assert_eq!(cfg.s3_region, "us-east-1");
+        assert_eq!(cfg.s3_access_key_env, "XIMED_S3_ACCESS_KEY");
+        assert_eq!(cfg.s3_secret_key_env, "XIMED_S3_SECRET_KEY");
+    }
+
+    #[test]
+    fn direct_credentials_read_from_env() {
+        let _g = env_lock();
+        unsafe {
+            std::env::set_var("XIMED_WEBDAV_PASSWORD", "dav-secret");
+            std::env::set_var("XIMED_S3_ACCESS_KEY", "AKIA123");
+            std::env::set_var("XIMED_S3_SECRET_KEY", "s3-secret");
+        }
+        let cfg = ClientConfig::default();
+        assert_eq!(cfg.webdav_password().as_deref(), Some("dav-secret"));
+        assert_eq!(cfg.s3_access_key().as_deref(), Some("AKIA123"));
+        assert_eq!(cfg.s3_secret_key().as_deref(), Some("s3-secret"));
+        unsafe {
+            std::env::remove_var("XIMED_WEBDAV_PASSWORD");
+            std::env::remove_var("XIMED_S3_ACCESS_KEY");
+            std::env::remove_var("XIMED_S3_SECRET_KEY");
         }
     }
 

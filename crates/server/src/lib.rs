@@ -70,12 +70,16 @@ pub async fn run_managed(
         },
     );
 
-    // SQLite 历史记录（history.db 与数据目录同根）
-    let history_repo = match store::HistoryRepo::open(
+    // SQLite 历史记录（history.db 与数据目录同根，按配置保留上限修剪）
+    let history_repo = match store::HistoryRepo::open_with_limit(
         std::path::Path::new(&settings.server().data_dir).join("history.db"),
+        settings.history().max_items,
     ) {
         Ok(repo) => {
-            tracing::info!("history db enabled");
+            tracing::info!(
+                "history db enabled (max_items={})",
+                settings.history().max_items
+            );
             Some(Arc::new(repo))
         }
         Err(e) => {
@@ -85,12 +89,15 @@ pub async fn run_managed(
     };
 
     let clipboard_ctx = service::ClipboardContext::with_history(storage, history_repo);
-    let app_state = Arc::new(state::AppState::new(
-        clipboard_ctx,
-        settings.auth().clone(),
-        settings.clipboard().clone(),
-        settings.sse().clone(),
-    ));
+    let app_state = Arc::new(
+        state::AppState::new(
+            clipboard_ctx,
+            settings.auth().clone(),
+            settings.clipboard().clone(),
+            settings.sse().clone(),
+        )
+        .with_history_cfg(settings.history().clone()),
+    );
 
     let app = axum::Router::new()
         .route("/healthz", axum::routing::get(handlers::http::healthz))
@@ -223,6 +230,7 @@ mod tests {
                 auth_token_env: None,
             },
             tls: config::TlsConfig::default(),
+            history: config::HistoryConfig::default(),
         };
         (s, dir)
     }

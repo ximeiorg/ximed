@@ -62,6 +62,8 @@ pub struct Settings {
     pub storage: StorageConfig,
     #[serde(default)]
     pub tls: TlsConfig,
+    #[serde(default)]
+    pub history: HistoryConfig,
 }
 
 impl Settings {
@@ -106,6 +108,9 @@ impl Settings {
     }
     pub fn tls(&self) -> &TlsConfig {
         &self.tls
+    }
+    pub fn history(&self) -> &HistoryConfig {
+        &self.history
     }
 }
 
@@ -221,6 +226,22 @@ pub struct TlsConfig {
     pub key_env: Option<String>,
 }
 
+/// 剪贴板历史配置（feature = history 启用时生效）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct HistoryConfig {
+    /// 历史保留条数上限（超出后修剪最旧记录），默认 100。
+    #[serde(default = "default_history_max_items")]
+    pub max_items: u64,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self {
+            max_items: default_history_max_items(),
+        }
+    }
+}
+
 /// 默认值函数（serde default 使用）
 fn default_true() -> bool {
     true
@@ -261,6 +282,9 @@ fn default_sse_heartbeat_ms() -> u64 {
 fn default_backend() -> String {
     "local".to_string()
 }
+fn default_history_max_items() -> u64 {
+    100
+}
 
 #[cfg(test)]
 mod tests {
@@ -285,6 +309,7 @@ mod tests {
         assert_eq!(s.sse().heartbeat_ms, 15_000);
         assert_eq!(s.storage().backend, "local");
         assert!(!s.tls().enabled);
+        assert_eq!(s.history().max_items, 100);
     }
 
     #[test]

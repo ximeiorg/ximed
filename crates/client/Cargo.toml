@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 async-trait = "0.1"
 domain = { path = "../domain" }
+store = { path = "../store", features = ["history"] }
 tokio = { version = "1", features = ["time", "macros", "rt", "sync"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
@@ -19,6 +20,10 @@ base64 = "0.22"
 thiserror = "2"
 arboard = "3"
 tracing = "0.1"
+# S3 直连适配器：AWS SigV4 签名（轻量，无 openssl）
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

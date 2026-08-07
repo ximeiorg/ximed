@@ -15,6 +15,7 @@ use domain::profile::{Profile, ProfileType};
 
 use crate::clipboard::ClipboardAdapter;
 use crate::config::ClientConfig;
+use crate::settings::SyncSettings;
 use crate::transport::{HttpTransport, Transport, WsTransport};
 
 /// 推送失败后的重试退避间隔：避免 server 未启动时每轮轮询都重试刷日志。
@@ -36,13 +37,19 @@ pub enum SyncAction {
     None,
     /// 推送本地 profile 到服务器。
     Push(Profile),
-    /// 从服务器写入本地剪贴板。
-    Write(String),
+    /// 从服务器写入本地剪贴板（携带来源设备，供通知）。
+    Write {
+        text: String,
+        source: Option<String>,
+    },
 }
 
 /// 同步引擎。
+#[allow(clippy::type_complexity)]
 pub struct SyncEngine {
     cfg: ClientConfig,
+    /// 同步开关与上传白名单设置。
+    sync: SyncSettings,
     /// 保留：WS 断线重连时重建传输通道需要密码。
     #[allow(dead_code)]
     password: String,
@@ -56,26 +63,49 @@ pub struct SyncEngine {
     retry_until: Option<std::time::Instant>,
     /// 连接状态回调（桌面形态注入：本地模式提示开启 server，远程模式提示不可用）。
     status_handler: Option<Arc<dyn Fn(SyncStatus) + Send + Sync>>,
+    /// 下载通知回调（收到远端内容且通知开关开启时调用，携带来源设备）。
+    download_handler: Option<Arc<dyn Fn(Option<String>) + Send + Sync>>,
+    /// 历史记录回调（push 成功 / 写入本地剪贴板时调用，携带 profile）。
+    /// 桌面形态注入：server 模式记录到 server（引擎不感知），直连模式记录到本地库。
+    history_handler: Option<Arc<dyn Fn(&Profile) + Send + Sync>>,
 }
 
 impl SyncEngine {
     /// 构造引擎。
-    pub fn new(cfg: ClientConfig, password: String, clipboard: Arc<dyn ClipboardAdapter>) -> Self {
+    pub fn new(
+        cfg: ClientConfig,
+        sync: SyncSettings,
+        password: String,
+        clipboard: Arc<dyn ClipboardAdapter>,
+    ) -> Self {
         Self {
             transport: make_transport(&cfg, &password),
             cfg,
+            sync,
             password,
             clipboard,
             last_hash: None,
             self_written: None,
             retry_until: None,
             status_handler: None,
+            download_handler: None,
+            history_handler: None,
         }
     }
 
     /// 注入连接状态回调（桌面 UI 提示用，引擎内不感知 UI）。
     pub fn set_status_handler(&mut self, handler: Arc<dyn Fn(SyncStatus) + Send + Sync>) {
         self.status_handler = Some(handler);
+    }
+
+    /// 注入下载通知回调（收到远端内容时调用，携带来源设备）。
+    pub fn set_download_handler(&mut self, handler: Arc<dyn Fn(Option<String>) + Send + Sync>) {
+        self.download_handler = Some(handler);
+    }
+
+    /// 注入历史记录回调（push 成功 / 写入本地时调用）。
+    pub fn set_history_handler(&mut self, handler: Arc<dyn Fn(&Profile) + Send + Sync>) {
+        self.history_handler = Some(handler);
     }
 
     fn report_status(&self, status: SyncStatus) {
@@ -87,25 +117,8 @@ impl SyncEngine {
     /// 主循环：轮询本地 + 接收远端（WS 实时或 HTTP 轮询）。
     pub async fn run(&mut self) {
         // 启动即拉取一次服务器快照（若本地为空则采纳服务器内容），并上报连接状态
-        match self.transport.pull().await {
-            Ok(Some(remote)) => {
-                self.report_status(SyncStatus::Online);
-                if remote.r#type == ProfileType::Text {
-                    let local = self.clipboard.get();
-                    let should_adopt = match local {
-                        None => true,
-                        Some(l) => text_hash(&l) != remote.hash,
-                    };
-                    if should_adopt {
-                        let action = self.apply_remote(&remote);
-                        if matches!(action, SyncAction::Write(_)) {
-                            tracing::debug!("adopted server clipboard on start");
-                        }
-                    }
-                }
-            }
-            Ok(None) => self.report_status(SyncStatus::Online),
-            Err(_) => self.report_status(SyncStatus::Offline),
+        if self.sync.switch_on && self.sync.pull_switch_on {
+            self.run_startup_pull().await;
         }
 
         let poll = Duration::from_millis(self.cfg.poll_ms);
@@ -130,8 +143,36 @@ impl SyncEngine {
         }
     }
 
+    /// 启动拉取：主开关与拉取开关开启时尝试采纳服务器快照，并上报连接状态。
+    async fn run_startup_pull(&mut self) {
+        match self.transport.pull().await {
+            Ok(Some(remote)) => {
+                self.report_status(SyncStatus::Online);
+                if remote.r#type == ProfileType::Text {
+                    let local = self.clipboard.get();
+                    let should_adopt = match local {
+                        None => true,
+                        Some(l) => text_hash(&l) != remote.hash,
+                    };
+                    if should_adopt {
+                        let action = self.apply_remote(&remote);
+                        if matches!(action, SyncAction::Write { .. }) {
+                            tracing::debug!("adopted server clipboard on start");
+                        }
+                    }
+                }
+            }
+            Ok(None) => self.report_status(SyncStatus::Online),
+            Err(_) => self.report_status(SyncStatus::Offline),
+        }
+    }
+
     /// 本地轮询决策（纯逻辑，可单测）：剪贴板变化且非自写回声 → Push。
     pub fn on_local_poll(&mut self, local: Option<String>) -> SyncAction {
+        // 同步主开关或推送开关关闭：不推送
+        if !self.sync.switch_on || !self.sync.push_switch_on {
+            return SyncAction::None;
+        }
         // 推送失败退避窗口内不重复尝试，避免 server 未启动时每轮轮询都重试刷日志
         if let Some(deadline) = self.retry_until {
             if std::time::Instant::now() < deadline {
@@ -155,12 +196,24 @@ impl SyncEngine {
         if self.last_hash.as_deref() == Some(&hash) {
             return SyncAction::None;
         }
+        // 类型白名单 + 大小上限（当前仅文本，size 恒小于 10MB 上限；为图片/文件预留）
+        let profile = Profile::from_text(text, Some(self.cfg.source.clone()));
+        if !self.sync.type_allowed(profile.r#type) {
+            return SyncAction::None;
+        }
+        if profile.size as u64 > self.sync.max_file_byte {
+            return SyncAction::None;
+        }
         self.last_hash = Some(hash);
-        SyncAction::Push(Profile::from_text(text, Some(self.cfg.source.clone())))
+        SyncAction::Push(profile)
     }
 
     /// 远端变更决策（纯逻辑，可单测）：hash 与本地/自写都不同 → Write。
     pub fn apply_remote(&mut self, remote: &Profile) -> SyncAction {
+        // 同步主开关或拉取开关关闭：不写入本地
+        if !self.sync.switch_on || !self.sync.pull_switch_on {
+            return SyncAction::None;
+        }
         if remote.r#type != ProfileType::Text || remote.text.is_empty() {
             return SyncAction::None;
         }
@@ -178,7 +231,10 @@ impl SyncEngine {
         }
         self.self_written = Some(remote.hash.clone());
         self.last_hash = Some(remote.hash.clone());
-        SyncAction::Write(remote.text.clone())
+        SyncAction::Write {
+            text: remote.text.clone(),
+            source: remote.source.clone(),
+        }
     }
 
     /// 执行同步动作（写剪贴板为同步操作；push 异步）。
@@ -189,6 +245,10 @@ impl SyncEngine {
                 match self.transport.push(&profile).await {
                     Ok(_) => {
                         self.report_status(SyncStatus::Online);
+                        // 历史记录：推送成功即本机剪贴板内容生效
+                        if let Some(h) = &self.history_handler {
+                            h(&profile);
+                        }
                     }
                     Err(e) => {
                         // server 未启动/不可达属预期场景，不在 warn 刷屏；
@@ -200,19 +260,41 @@ impl SyncEngine {
                     }
                 }
             }
-            SyncAction::Write(text) => {
+            SyncAction::Write { text, source } => {
                 self.clipboard.set(&text);
+                // 历史记录：远端内容写入本地剪贴板
+                if let Some(h) = &self.history_handler {
+                    h(&Profile::from_text(text.clone(), source.clone()));
+                }
+                // 通知开关：收到远端内容时告知 UI（来源设备）
+                if self.sync.notify_on_downloaded
+                    && let Some(h) = &self.download_handler
+                {
+                    h(source);
+                }
             }
         }
     }
 }
 
-/// 按配置构建传输通道（WS 实时，默认开启；关闭则用 HTTP 轮询）。
+/// 按配置构建传输通道：
+/// - server 适配器（默认）：WS 实时，关闭则 HTTP 轮询
+/// - webdav / s3 适配器：直连远端存储（绕过 ximed server）
 fn make_transport(cfg: &ClientConfig, password: &str) -> Arc<dyn Transport> {
-    if cfg.ws_enabled {
-        Arc::new(WsTransport::new(cfg, password))
-    } else {
-        Arc::new(HttpTransport::new(cfg, password))
+    use crate::config::AdapterKind;
+    match cfg.adapter {
+        AdapterKind::WebDav | AdapterKind::S3 => {
+            // 直连配置缺失时退化为空通道（引擎将按 Offline 处理）；由上层校验配置
+            crate::direct::make_direct_transport(cfg)
+                .unwrap_or_else(|_| Arc::new(crate::transport::HttpTransport::new(cfg, password)))
+        }
+        AdapterKind::Server => {
+            if cfg.ws_enabled {
+                Arc::new(WsTransport::new(cfg, password))
+            } else {
+                Arc::new(HttpTransport::new(cfg, password))
+            }
+        }
     }
 }
 
@@ -271,14 +353,10 @@ mod tests {
     fn cfg(source: &str) -> ClientConfig {
         ClientConfig {
             server_url: "http://127.0.0.1:8443".to_string(),
-            username: "alice".to_string(),
-            password: None,
-            password_env: "XIMED_CLIENT_PASSWORD".to_string(),
             source: source.to_string(),
             poll_ms: 10,
             http_fallback_ms: 10,
-            heartbeat_secs: 30,
-            ws_enabled: true,
+            ..ClientConfig::default()
         }
     }
 
@@ -288,7 +366,12 @@ mod tests {
         transport: Arc<dyn Transport>,
     ) -> (SyncEngine, Arc<MockClipboard>) {
         let cb = Arc::new(MockClipboard::new());
-        let mut e = SyncEngine::new(cfg(source), "pw".to_string(), cb.clone());
+        // 测试默认开启同步主开关（产品默认关闭，由 UI/配置显式开启）
+        let sync = SyncSettings {
+            switch_on: true,
+            ..SyncSettings::default()
+        };
+        let mut e = SyncEngine::new(cfg(source), sync, "pw".to_string(), cb.clone());
         e.transport = transport;
         (e, cb)
     }
@@ -315,11 +398,11 @@ mod tests {
         let (mut e, cb) = engine_with_transport("dev-a", t.clone());
         let a = e.apply_remote(&t.remote.lock().unwrap().clone().unwrap());
         match &a {
-            SyncAction::Write(txt) => assert_eq!(txt, "from-server"),
+            SyncAction::Write { text, .. } => assert_eq!(text, "from-server"),
             other => panic!("expected write, got {other:?}"),
         }
         // 决策确认后执行写本地（Write 分支为同步操作）
-        if let SyncAction::Write(text) = a {
+        if let SyncAction::Write { text, .. } = a {
             e.clipboard.set(&text);
         }
         assert_eq!(cb.get().as_deref(), Some("from-server"));
@@ -406,5 +489,99 @@ mod tests {
             seen.lock().unwrap().as_slice(),
             &[SyncStatus::Offline, SyncStatus::Online]
         );
+    }
+
+    #[test]
+    fn master_switch_off_suppresses_push_and_pull() {
+        let t = Arc::new(MockTransport::new(None));
+        let (mut e, cb) = engine_with_transport("dev-a", t.clone());
+        e.sync.switch_on = false;
+        cb.simulate_external_copy("hello");
+        // 主开关关：本地变化不推送
+        assert_eq!(e.on_local_poll(cb.get()), SyncAction::None);
+        // 主开关关：远端变化不写本地
+        let remote = Profile::from_text("from-server", Some("dev-b".to_string()));
+        assert_eq!(e.apply_remote(&remote), SyncAction::None);
+    }
+
+    #[test]
+    fn push_switch_off_suppresses_upload_only() {
+        let t = Arc::new(MockTransport::new(None));
+        let (mut e, cb) = engine_with_transport("dev-a", t.clone());
+        e.sync.switch_on = true;
+        e.sync.push_switch_on = false;
+        cb.simulate_external_copy("hello");
+        // 推送关：本地不推送
+        assert_eq!(e.on_local_poll(cb.get()), SyncAction::None);
+        // 拉取仍工作
+        let remote = Profile::from_text("from-server", Some("dev-b".to_string()));
+        assert!(matches!(
+            e.apply_remote(&remote),
+            SyncAction::Write { text, .. } if text == "from-server"
+        ));
+    }
+
+    #[test]
+    fn pull_switch_off_suppresses_download_only() {
+        let t = Arc::new(MockTransport::new(None));
+        let (mut e, cb) = engine_with_transport("dev-a", t.clone());
+        e.sync.switch_on = true;
+        e.sync.pull_switch_on = false;
+        cb.simulate_external_copy("hello");
+        // 推送仍工作
+        assert!(matches!(e.on_local_poll(cb.get()), SyncAction::Push(_)));
+        // 拉取关：远端变化不写本地
+        let remote = Profile::from_text("from-server", Some("dev-b".to_string()));
+        assert_eq!(e.apply_remote(&remote), SyncAction::None);
+    }
+
+    #[test]
+    fn upload_text_disabled_suppresses_push() {
+        let t = Arc::new(MockTransport::new(None));
+        let (mut e, cb) = engine_with_transport("dev-a", t.clone());
+        e.sync.switch_on = true;
+        e.sync.upload_text = false;
+        cb.simulate_external_copy("hello");
+        assert_eq!(e.on_local_poll(cb.get()), SyncAction::None);
+    }
+
+    #[tokio::test]
+    async fn download_notification_carries_source_when_enabled() {
+        let t = Arc::new(MockTransport::new(None));
+        let (mut e, cb) = engine_with_transport("dev-a", t.clone());
+        e.sync.switch_on = true;
+        e.sync.notify_on_downloaded = true;
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_cb = seen.clone();
+        e.set_download_handler(Arc::new(move |src: Option<String>| {
+            seen_cb.lock().unwrap().push(src);
+        }));
+        let remote = Profile::from_text("from-server", Some("dev-b".to_string()));
+        let a = e.apply_remote(&remote);
+        e.execute(a).await;
+        assert_eq!(cb.get().as_deref(), Some("from-server"));
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            &[Some("dev-b".to_string())],
+            "download handler must receive source device"
+        );
+    }
+
+    #[tokio::test]
+    async fn download_notification_suppressed_when_disabled() {
+        let t = Arc::new(MockTransport::new(None));
+        let (mut e, cb) = engine_with_transport("dev-a", t.clone());
+        e.sync.switch_on = true;
+        e.sync.notify_on_downloaded = false;
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_cb = seen.clone();
+        e.set_download_handler(Arc::new(move |src: Option<String>| {
+            seen_cb.lock().unwrap().push(src);
+        }));
+        let remote = Profile::from_text("from-server", Some("dev-b".to_string()));
+        let a = e.apply_remote(&remote);
+        e.execute(a).await;
+        assert_eq!(cb.get().as_deref(), Some("from-server"));
+        assert!(seen.lock().unwrap().is_empty());
     }
 }

@@ -1,6 +1,7 @@
 # DECISIONS
 
-> 重要决策记录，来源：docs/design/clipboard-sync.md 第 13 节
+> 重要决策记录。原设计文档 docs/design/clipboard-sync.md 已删除（其中 webdav/s3 为
+> server 存储后端的方案已被废弃——实际实现为 client 直连，见下），决策在此独立维护。
 
 ## 1. 所有字段一律小写
 

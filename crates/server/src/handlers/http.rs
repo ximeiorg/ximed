@@ -100,11 +100,12 @@ pub async fn get_history(
     if let Err(resp) = require_auth(&headers, &state).await {
         return resp;
     }
+    let max_items = state.history_cfg.max_items.max(1) as usize;
     let limit = query
         .get("limit")
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(50)
-        .clamp(1, 200);
+        .unwrap_or(max_items)
+        .clamp(1, max_items);
     let before_seq = query.get("before_seq").and_then(|s| s.parse::<u64>().ok());
 
     #[cfg(feature = "history")]

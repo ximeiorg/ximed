@@ -20,13 +20,14 @@ use client::config::ClientConfig;
 use client::history::HistoryItem;
 use iced::font::Weight;
 use iced::widget::{
-    Space, TextInput, button, column, container, image, row, scrollable, text, text_input,
+    Space, TextInput, button, column, container, image, row, scrollable, text, text_input, toggler,
 };
 use iced::{
     Alignment, Background, Border, Color, Element, Font, Length, Subscription, Task, Theme, border,
 };
 
 use crate::settings::{AppSettings, SyncMode};
+use client::config::AdapterKind;
 
 /// 面板切换。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +52,8 @@ pub enum UiMsg {
     History { items: Vec<HistoryItem> },
     /// client 连接状态上报（引擎 push/拉取结果）。
     SyncStatus { online: bool },
+    /// 收到远端剪贴板内容（通知开关开启时上报，携带来源设备）。
+    Downloaded { source: Option<String> },
     /// 设置已保存并应用（连接模式/远程服务器已生效）。
     SettingsApplied,
     /// 显示窗口（托盘菜单/左键点击触发）。
@@ -72,13 +75,27 @@ pub enum UiCmd {
     ServerStop,
     /// 打开配置文件所在目录。
     OpenConfigDir,
-    /// 应用新设置（连接模式 + 远程服务器），持久化并重启 client 引擎。
-    ApplySettings {
-        mode: SyncMode,
-        remote_url: String,
-        remote_username: String,
-        remote_password: String,
-    },
+    /// 应用新设置（同步适配器 + 连接模式 + 直连/远程表单 + 同步设置），持久化并重启 client 引擎。
+    ApplySettings(Box<ApplySettingsPayload>),
+}
+
+/// 设置保存载荷（独立结构避免 UiCmd variant 大小差异过大）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplySettingsPayload {
+    pub adapter: client::config::AdapterKind,
+    pub mode: SyncMode,
+    pub remote_url: String,
+    pub remote_username: String,
+    pub remote_password: String,
+    pub webdav_url: String,
+    pub webdav_username: String,
+    pub webdav_password: String,
+    pub s3_endpoint: String,
+    pub s3_bucket: String,
+    pub s3_region: String,
+    pub s3_access_key: String,
+    pub s3_secret_key: String,
+    pub sync: client::settings::SyncSettings,
 }
 
 /// UI 消息（iced Message：channel 事件 + 按钮动作）。
@@ -108,12 +125,46 @@ pub enum Message {
     Quit,
     /// 切换连接模式（本地 / 远程 server）。
     SettingsMode(SyncMode),
+    /// 切换同步适配器（server / webdav / s3）。
+    SettingsAdapter(client::config::AdapterKind),
     /// 远程服务器地址输入。
     SettingsUrl(String),
     /// 远程服务器用户名输入。
     SettingsUsername(String),
     /// 远程服务器密码输入。
     SettingsPassword(String),
+    /// WebDAV 直连地址输入。
+    SettingsWebDavUrl(String),
+    /// WebDAV 直连用户名输入。
+    SettingsWebDavUsername(String),
+    /// WebDAV 直连密码输入。
+    SettingsWebDavPassword(String),
+    /// S3 直连端点输入。
+    SettingsS3Endpoint(String),
+    /// S3 直连存储桶输入。
+    SettingsS3Bucket(String),
+    /// S3 直连区域输入。
+    SettingsS3Region(String),
+    /// S3 直连 Access Key 输入。
+    SettingsS3AccessKey(String),
+    /// S3 直连 Secret Key 输入。
+    SettingsS3SecretKey(String),
+    /// 同步主开关。
+    SettingsSyncSwitch(bool),
+    /// 推送开关（本地 → 服务器）。
+    SettingsSyncPush(bool),
+    /// 拉取开关（服务器 → 本地）。
+    SettingsSyncPull(bool),
+    /// 上传文本开关。
+    SettingsSyncUploadText(bool),
+    /// 上传图片开关（框架预留）。
+    SettingsSyncUploadImage(bool),
+    /// 上传单文件开关（框架预留）。
+    SettingsSyncUploadSingleFile(bool),
+    /// 上传大小上限（MB，文本输入）。
+    SettingsSyncMaxFileMb(String),
+    /// 收到远端内容时通知开关。
+    SettingsSyncNotify(bool),
     /// 保存并应用设置。
     ApplySettings,
 }
@@ -143,12 +194,46 @@ pub struct UiState {
     pub config_dir: String,
     /// 连接模式（本地 / 远程 server）。
     pub sync_mode: SyncMode,
+    /// 同步适配器（server / webdav / s3）。
+    pub adapter: client::config::AdapterKind,
     /// 远程服务器地址（设置面板编辑）。
     pub remote_url: String,
     /// 远程服务器用户名（设置面板编辑）。
     pub remote_username: String,
     /// 远程服务器密码（设置面板编辑）。
     pub remote_password: String,
+    /// WebDAV 直连地址（设置面板编辑）。
+    pub webdav_url: String,
+    /// WebDAV 直连用户名（设置面板编辑）。
+    pub webdav_username: String,
+    /// WebDAV 直连密码（设置面板编辑）。
+    pub webdav_password: String,
+    /// S3 直连端点（设置面板编辑）。
+    pub s3_endpoint: String,
+    /// S3 直连存储桶（设置面板编辑）。
+    pub s3_bucket: String,
+    /// S3 直连区域（设置面板编辑）。
+    pub s3_region: String,
+    /// S3 直连 Access Key（设置面板编辑）。
+    pub s3_access_key: String,
+    /// S3 直连 Secret Key（设置面板编辑）。
+    pub s3_secret_key: String,
+    /// 同步主开关（设置面板编辑）。
+    pub sync_switch_on: bool,
+    /// 推送开关（设置面板编辑）。
+    pub sync_push_on: bool,
+    /// 拉取开关（设置面板编辑）。
+    pub sync_pull_on: bool,
+    /// 上传文本开关（设置面板编辑）。
+    pub sync_upload_text: bool,
+    /// 上传图片开关（设置面板编辑，框架预留）。
+    pub sync_upload_image: bool,
+    /// 上传单文件开关（设置面板编辑，框架预留）。
+    pub sync_upload_single_file: bool,
+    /// 上传大小上限（MB，文本输入，设置面板编辑）。
+    pub sync_max_file_mb: String,
+    /// 收到远端内容时通知开关（设置面板编辑）。
+    pub sync_notify: bool,
     /// 设置保存状态提示文本。
     pub settings_status: String,
     /// client 是否已连上 server（引擎上报）。
@@ -186,9 +271,26 @@ impl UiState {
             local_server,
             config_dir,
             sync_mode: app_settings.mode,
+            adapter: app_settings.adapter,
             remote_url: app_settings.remote_url.clone(),
             remote_username: app_settings.remote_username.clone(),
             remote_password: app_settings.remote_password.clone().unwrap_or_default(),
+            webdav_url: app_settings.webdav_url.clone(),
+            webdav_username: app_settings.webdav_username.clone(),
+            webdav_password: app_settings.webdav_password.clone().unwrap_or_default(),
+            s3_endpoint: app_settings.s3_endpoint.clone(),
+            s3_bucket: app_settings.s3_bucket.clone(),
+            s3_region: app_settings.s3_region.clone(),
+            s3_access_key: app_settings.s3_access_key.clone().unwrap_or_default(),
+            s3_secret_key: app_settings.s3_secret_key.clone().unwrap_or_default(),
+            sync_switch_on: app_settings.sync.switch_on,
+            sync_push_on: app_settings.sync.push_switch_on,
+            sync_pull_on: app_settings.sync.pull_switch_on,
+            sync_upload_text: app_settings.sync.upload_text,
+            sync_upload_image: app_settings.sync.upload_image,
+            sync_upload_single_file: app_settings.sync.upload_single_file,
+            sync_max_file_mb: (app_settings.sync.max_file_byte / (1024 * 1024)).to_string(),
+            sync_notify: app_settings.sync.notify_on_downloaded,
             settings_status: String::new(),
             sync_online: false,
             cmd_tx,
@@ -294,6 +396,10 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
         Message::Backend(UiMsg::SyncStatus { online }) => {
             state.sync_online = online;
         }
+        Message::Backend(UiMsg::Downloaded { source }) => {
+            let from = source.unwrap_or_else(|| "未知设备".to_string());
+            state.settings_status = format!("已从 {from} 同步新内容。");
+        }
         Message::Backend(UiMsg::SettingsApplied) => {
             state.settings_status = "已保存并应用。".to_string();
         }
@@ -346,6 +452,10 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
             state.sync_mode = mode;
             state.settings_status = String::new();
         }
+        Message::SettingsAdapter(adapter) => {
+            state.adapter = adapter;
+            state.settings_status = String::new();
+        }
         Message::SettingsUrl(url) => {
             state.remote_url = url;
             state.settings_status = String::new();
@@ -358,13 +468,90 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
             state.remote_password = password;
             state.settings_status = String::new();
         }
+        Message::SettingsWebDavUrl(url) => {
+            state.webdav_url = url;
+            state.settings_status = String::new();
+        }
+        Message::SettingsWebDavUsername(username) => {
+            state.webdav_username = username;
+            state.settings_status = String::new();
+        }
+        Message::SettingsWebDavPassword(password) => {
+            state.webdav_password = password;
+            state.settings_status = String::new();
+        }
+        Message::SettingsS3Endpoint(endpoint) => {
+            state.s3_endpoint = endpoint;
+            state.settings_status = String::new();
+        }
+        Message::SettingsS3Bucket(bucket) => {
+            state.s3_bucket = bucket;
+            state.settings_status = String::new();
+        }
+        Message::SettingsS3Region(region) => {
+            state.s3_region = region;
+            state.settings_status = String::new();
+        }
+        Message::SettingsS3AccessKey(key) => {
+            state.s3_access_key = key;
+            state.settings_status = String::new();
+        }
+        Message::SettingsS3SecretKey(key) => {
+            state.s3_secret_key = key;
+            state.settings_status = String::new();
+        }
+        Message::SettingsSyncSwitch(on) => {
+            state.sync_switch_on = on;
+            state.settings_status = String::new();
+        }
+        Message::SettingsSyncPush(on) => {
+            state.sync_push_on = on;
+            state.settings_status = String::new();
+        }
+        Message::SettingsSyncPull(on) => {
+            state.sync_pull_on = on;
+            state.settings_status = String::new();
+        }
+        Message::SettingsSyncUploadText(on) => {
+            state.sync_upload_text = on;
+            state.settings_status = String::new();
+        }
+        Message::SettingsSyncUploadImage(on) => {
+            state.sync_upload_image = on;
+            state.settings_status = String::new();
+        }
+        Message::SettingsSyncUploadSingleFile(on) => {
+            state.sync_upload_single_file = on;
+            state.settings_status = String::new();
+        }
+        Message::SettingsSyncMaxFileMb(v) => {
+            // 仅允许数字，非法输入忽略
+            if v.is_empty() || v.parse::<u64>().is_ok() {
+                state.sync_max_file_mb = v;
+                state.settings_status = String::new();
+            }
+        }
+        Message::SettingsSyncNotify(on) => {
+            state.sync_notify = on;
+            state.settings_status = String::new();
+        }
         Message::ApplySettings => {
-            let cmd = UiCmd::ApplySettings {
+            let cmd = UiCmd::ApplySettings(Box::new(ApplySettingsPayload {
+                adapter: state.adapter,
                 mode: state.sync_mode,
                 remote_url: state.remote_url.clone(),
                 remote_username: state.remote_username.clone(),
                 remote_password: state.remote_password.clone(),
-            };
+                webdav_url: state.webdav_url.clone(),
+                webdav_username: state.webdav_username.clone(),
+                webdav_password: state.webdav_password.clone(),
+                s3_endpoint: state.s3_endpoint.clone(),
+                s3_bucket: state.s3_bucket.clone(),
+                s3_region: state.s3_region.clone(),
+                s3_access_key: state.s3_access_key.clone(),
+                s3_secret_key: state.s3_secret_key.clone(),
+                sync: state.sync_settings(),
+            }));
             if state.cmd_tx.send(cmd).is_ok() {
                 state.settings_status = "正在保存并应用…".to_string();
             } else {
@@ -379,6 +566,27 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
 }
 
 impl UiState {
+    /// 把设置面板编辑态组装成 [`client::settings::SyncSettings`]。
+    /// 大小上限：MB 文本 → 字节（非法输入回退默认 10MB）。
+    fn sync_settings(&self) -> client::settings::SyncSettings {
+        let max_file_byte = self
+            .sync_max_file_mb
+            .parse::<u64>()
+            .ok()
+            .map(|mb| mb.saturating_mul(1024 * 1024))
+            .unwrap_or_else(|| 10 * 1024 * 1024);
+        client::settings::SyncSettings {
+            switch_on: self.sync_switch_on,
+            push_switch_on: self.sync_push_on,
+            pull_switch_on: self.sync_pull_on,
+            upload_text: self.sync_upload_text,
+            upload_image: self.sync_upload_image,
+            upload_single_file: self.sync_upload_single_file,
+            max_file_byte,
+            notify_on_downloaded: self.sync_notify,
+        }
+    }
+
     /// 创建托盘（仅一次）。必须在主线程、事件循环已运行时调用。
     fn ensure_tray(&mut self) {
         if self.tray_started {
@@ -967,7 +1175,12 @@ fn history_view(state: &UiState) -> Element<'_, Message> {
     } else {
         for item in &state.history {
             let expanded = state.expanded_history == Some(item.seq);
-            col = col.push(history_card(item, expanded, state.window_width));
+            col = col.push(history_card(
+                item,
+                expanded,
+                state.window_width,
+                &state.source,
+            ));
         }
     }
 
@@ -1006,7 +1219,12 @@ fn history_scroll_style(theme: &Theme, status: scrollable::Status) -> scrollable
 }
 
 /// 单条历史卡片：内容为主、最多 3 行，底部以 tag 展示元信息；点击展开全文。
-fn history_card(item: &HistoryItem, expanded: bool, window_width: f32) -> Element<'_, Message> {
+fn history_card<'a>(
+    item: &'a HistoryItem,
+    expanded: bool,
+    window_width: f32,
+    local_source: &'a str,
+) -> Element<'a, Message> {
     // 仅当内容超过 3 行时才允许展开：按内容区宽度估算换行行数。
     let has_more = history_has_more(&item.text, window_width);
 
@@ -1033,11 +1251,22 @@ fn history_card(item: &HistoryItem, expanded: bool, window_width: f32) -> Elemen
     };
 
     // 底部 tag 行：类型 / 来源 / 序号 / 时间
-    let source = item.source.clone().unwrap_or_else(|| "unknown".to_string());
+    // 来源区分：等于本机设备名 → 本机记录；否则为远程推送（强调色高亮 + 前缀）。
+    let is_local = item.source.as_deref() == Some(local_source);
+    let source_label = if is_local {
+        "本机".to_string()
+    } else {
+        format!("远程 · {}", item.source.as_deref().unwrap_or("unknown"))
+    };
+    let source_tag = if is_local {
+        history_tag(source_label)
+    } else {
+        history_tag_remote(source_label)
+    };
     let time = format_time(item.created_at);
     let tags = row![
         history_tag(item.kind.clone()),
-        history_tag(source),
+        source_tag,
         history_tag(format!("#{}", item.seq)),
         history_tag(time),
     ]
@@ -1137,6 +1366,22 @@ fn history_tag(label: String) -> Element<'static, Message> {
         .into()
 }
 
+/// 远程来源 tag：强调色文字 + 浅色强调底，与"本机"记录做视觉区分。
+fn history_tag_remote(label: String) -> Element<'static, Message> {
+    container(text(label).size(11).color(ACCENT))
+        .padding([3, 8])
+        .style(|_theme| container::Style {
+            background: Some(Background::Color(Color { a: 0.12, ..ACCENT })),
+            border: Border {
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: border::radius(999.0),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
 /// 相对时间：Unix 秒 → "刚刚 / N 分钟前 / N 小时前 / N 天前"。
 fn format_time(unix: i64) -> String {
     let now = std::time::SystemTime::now()
@@ -1155,81 +1400,301 @@ fn format_time(unix: i64) -> String {
     }
 }
 
-/// 设置面板：连接模式（本地 / 远程 server）+ 远程服务器表单 + 保存。
+/// 设置面板：同步设置卡片 + 连接模式卡片 + 保存。
 fn settings_view(state: &UiState) -> Element<'_, Message> {
-    let mode_local = seg_button("本地服务器", SyncMode::Local, state.sync_mode);
-    let mode_remote = seg_button("远程服务器", SyncMode::Remote, state.sync_mode);
-    let segmented =
-        container(row![mode_local, mode_remote].spacing(2).padding(2)).style(|_theme| {
-            container::Style {
-                background: Some(Background::Color(SURFACE_HOVER)),
-                border: Border {
-                    color: Color::TRANSPARENT,
-                    width: 0.0,
-                    radius: border::radius(RADIUS_MD),
-                },
-                ..container::Style::default()
-            }
-        });
+    let sync_card = container(sync_card_body(state))
+        .width(Length::Fill)
+        .padding(16)
+        .style(card);
+    let conn_card = container(conn_card_body(state))
+        .width(Length::Fill)
+        .padding(16)
+        .style(card);
 
-    let hint = match state.sync_mode {
-        SyncMode::Local => text("client 自动连接本机 server，地址/端口跟随 server 配置。")
-            .size(12)
-            .color(TEXT_MUTED),
-        SyncMode::Remote => text("client 连接下方配置的远程 server；切换后本机 server 将停止。")
-            .size(12)
-            .color(TEXT_MUTED),
-    };
-
-    let mut body = column![card_title("连接模式"), segmented, hint,].spacing(10);
-
-    if state.sync_mode == SyncMode::Remote {
-        body = body.push(
-            column![
-                Space::new().height(6),
-                field_label("远程服务器地址"),
-                TextInput::new("https://example.com:8443", &state.remote_url)
-                    .on_input(Message::SettingsUrl)
-                    .padding(10)
-                    .style(input_style),
-                Space::new().height(2),
-                field_label("用户名"),
-                TextInput::new("alice", &state.remote_username)
-                    .on_input(Message::SettingsUsername)
-                    .padding(10)
-                    .style(input_style),
-                Space::new().height(2),
-                field_label("密码"),
-                TextInput::new("", &state.remote_password)
-                    .secure(true)
-                    .on_input(Message::SettingsPassword)
-                    .padding(10)
-                    .style(input_style),
-            ]
-            .spacing(6),
-        );
-    }
-
-    body = body.push(Space::new().height(4));
-    body = body.push(
+    let body = column![
+        panel_header("设置", "连接模式、同步开关与上传白名单"),
+        Space::new().height(8),
+        conn_card,
+        Space::new().height(4),
+        sync_card,
+        Space::new().height(4),
         button("保存并应用")
             .on_press(Message::ApplySettings)
             .padding([10, 18])
             .style(primary_button),
-    );
-    body = body.push(text(&state.settings_status).size(12).color(TEXT_MUTED));
+        text(&state.settings_status).size(12).color(TEXT_MUTED),
+    ]
+    .spacing(6);
 
-    container(
-        column![
-            panel_header("设置", "连接模式与远程服务器"),
-            Space::new().height(8),
-            container(body).width(Length::Fill).padding(16).style(card),
-        ]
-        .spacing(10),
-    )
-    .width(Length::Fill)
-    .height(Length::Fill)
+    container(scrollable(body).height(Length::Fill))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+/// 同步设置卡片：主开关 + 拉取/推送 + 上传白名单 + 大小上限 + 通知。
+fn sync_card_body(state: &UiState) -> Element<'_, Message> {
+    column![
+        card_title("同步"),
+        toggle_row(
+            "同步总开关",
+            state.sync_switch_on,
+            Message::SettingsSyncSwitch,
+            "关闭时引擎空转，不推不拉。",
+        ),
+        toggle_row(
+            "推送（本地 → 服务器）",
+            state.sync_push_on,
+            Message::SettingsSyncPush,
+            "本地剪贴板变化时上传到服务器。",
+        ),
+        toggle_row(
+            "拉取（服务器 → 本地）",
+            state.sync_pull_on,
+            Message::SettingsSyncPull,
+            "服务器内容变化时下载写回本地。",
+        ),
+        Space::new().height(4),
+        text("上传白名单").size(12).color(TEXT_MUTED),
+        toggle_row(
+            "文本",
+            state.sync_upload_text,
+            Message::SettingsSyncUploadText,
+            ""
+        ),
+        toggle_row(
+            "图片",
+            state.sync_upload_image,
+            Message::SettingsSyncUploadImage,
+            "框架预留：引擎当前仅同步文本。",
+        ),
+        toggle_row(
+            "单个文件",
+            state.sync_upload_single_file,
+            Message::SettingsSyncUploadSingleFile,
+            "框架预留：引擎当前仅同步文本。",
+        ),
+        Space::new().height(4),
+        field_label("上传大小上限（MB）"),
+        TextInput::new("10", &state.sync_max_file_mb)
+            .on_input(Message::SettingsSyncMaxFileMb)
+            .padding(10)
+            .style(input_style),
+        Space::new().height(4),
+        toggle_row(
+            "收到远端内容时通知",
+            state.sync_notify,
+            Message::SettingsSyncNotify,
+            "下载到新内容时提示来源设备。",
+        ),
+    ]
+    .spacing(8)
     .into()
+}
+
+/// 同步目标卡片：适配器选择（server / webdav / s3）+ 对应表单。
+fn conn_card_body(state: &UiState) -> Element<'_, Message> {
+    let adapter_server = seg_button_adapter("ximed server", AdapterKind::Server, state.adapter);
+    let adapter_webdav = seg_button_adapter("WebDAV", AdapterKind::WebDav, state.adapter);
+    let adapter_s3 = seg_button_adapter("S3", AdapterKind::S3, state.adapter);
+    let segmented = container(
+        row![adapter_server, adapter_webdav, adapter_s3]
+            .spacing(2)
+            .padding(2),
+    )
+    .style(|_theme| container::Style {
+        background: Some(Background::Color(SURFACE_HOVER)),
+        border: Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: border::radius(RADIUS_MD),
+        },
+        ..container::Style::default()
+    });
+
+    let mut body = column![card_title("同步目标"), segmented,].spacing(10);
+
+    match state.adapter {
+        AdapterKind::Server => {
+            let mode_local = seg_button("本地服务器", SyncMode::Local, state.sync_mode);
+            let mode_remote = seg_button("远程服务器", SyncMode::Remote, state.sync_mode);
+            let mode_seg =
+                container(row![mode_local, mode_remote].spacing(2).padding(2)).style(|_theme| {
+                    container::Style {
+                        background: Some(Background::Color(SURFACE_HOVER)),
+                        border: Border {
+                            color: Color::TRANSPARENT,
+                            width: 0.0,
+                            radius: border::radius(RADIUS_MD),
+                        },
+                        ..container::Style::default()
+                    }
+                });
+            let hint = match state.sync_mode {
+                SyncMode::Local => text("自动连接本机 server，地址/端口跟随 server 配置。")
+                    .size(12)
+                    .color(TEXT_MUTED),
+                SyncMode::Remote => text("连接下方配置的远程 server；切换后本机 server 将停止。")
+                    .size(12)
+                    .color(TEXT_MUTED),
+            };
+            body = body.push(column![mode_seg, hint,].spacing(6));
+
+            if state.sync_mode == SyncMode::Remote {
+                body = body.push(
+                    column![
+                        Space::new().height(6),
+                        field_label("远程服务器地址"),
+                        TextInput::new("https://example.com:8443", &state.remote_url)
+                            .on_input(Message::SettingsUrl)
+                            .padding(10)
+                            .style(input_style),
+                        Space::new().height(2),
+                        field_label("用户名"),
+                        TextInput::new("alice", &state.remote_username)
+                            .on_input(Message::SettingsUsername)
+                            .padding(10)
+                            .style(input_style),
+                        Space::new().height(2),
+                        field_label("密码"),
+                        TextInput::new("", &state.remote_password)
+                            .secure(true)
+                            .on_input(Message::SettingsPassword)
+                            .padding(10)
+                            .style(input_style),
+                    ]
+                    .spacing(6),
+                );
+            }
+        }
+        AdapterKind::WebDav => {
+            body = body.push(
+                column![
+                    Space::new().height(6),
+                    field_label("WebDAV 地址"),
+                    TextInput::new("https://dav.example.com/xime", &state.webdav_url)
+                        .on_input(Message::SettingsWebDavUrl)
+                        .padding(10)
+                        .style(input_style),
+                    Space::new().height(2),
+                    field_label("用户名"),
+                    TextInput::new("", &state.webdav_username)
+                        .on_input(Message::SettingsWebDavUsername)
+                        .padding(10)
+                        .style(input_style),
+                    Space::new().height(2),
+                    field_label("密码"),
+                    TextInput::new("", &state.webdav_password)
+                        .secure(true)
+                        .on_input(Message::SettingsWebDavPassword)
+                        .padding(10)
+                        .style(input_style),
+                    Space::new().height(4),
+                    text("直连 WebDAV：剪贴板同步到 {地址}/clipboard/current.json，无需 ximed server。")
+                        .size(11)
+                        .color(TEXT_FAINT),
+                ]
+                .spacing(6),
+            );
+        }
+        AdapterKind::S3 => {
+            body = body.push(
+                column![
+                    Space::new().height(6),
+                    field_label("S3 端点"),
+                    TextInput::new("https://s3.example.com", &state.s3_endpoint)
+                        .on_input(Message::SettingsS3Endpoint)
+                        .padding(10)
+                        .style(input_style),
+                    Space::new().height(2),
+                    field_label("存储桶"),
+                    TextInput::new("clipboard-bucket", &state.s3_bucket)
+                        .on_input(Message::SettingsS3Bucket)
+                        .padding(10)
+                        .style(input_style),
+                    Space::new().height(2),
+                    field_label("区域"),
+                    TextInput::new("us-east-1", &state.s3_region)
+                        .on_input(Message::SettingsS3Region)
+                        .padding(10)
+                        .style(input_style),
+                    Space::new().height(2),
+                    field_label("Access Key"),
+                    TextInput::new("", &state.s3_access_key)
+                        .secure(true)
+                        .on_input(Message::SettingsS3AccessKey)
+                        .padding(10)
+                        .style(input_style),
+                    Space::new().height(2),
+                    field_label("Secret Key"),
+                    TextInput::new("", &state.s3_secret_key)
+                        .secure(true)
+                        .on_input(Message::SettingsS3SecretKey)
+                        .padding(10)
+                        .style(input_style),
+                    Space::new().height(4),
+                    text("直连 S3（path-style）：同步到 {桶}/clipboard/current.json，无需 ximed server。")
+                        .size(11)
+                        .color(TEXT_FAINT),
+                ]
+                .spacing(6),
+            );
+        }
+    }
+
+    body.into()
+}
+
+/// 适配器分段按钮。
+fn seg_button_adapter<'a>(
+    label: &'a str,
+    adapter: AdapterKind,
+    current: AdapterKind,
+) -> Element<'a, Message> {
+    let active = adapter == current;
+    button(
+        text(label)
+            .size(13)
+            .color(if active { TEXT_MAIN } else { TEXT_MUTED }),
+    )
+    .on_press(Message::SettingsAdapter(adapter))
+    .width(Length::Fill)
+    .padding([8, 14])
+    .style(move |_theme, status| {
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        button::Style {
+            background: if active || hovered {
+                Some(Background::Color(SURFACE))
+            } else {
+                None
+            },
+            text_color: if active { TEXT_MAIN } else { TEXT_MUTED },
+            border: Border {
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: border::radius(RADIUS_SM),
+            },
+            ..button::Style::default()
+        }
+    })
+    .into()
+}
+
+/// 开关行：label + toggler + 说明文本。
+fn toggle_row<'a>(
+    label: &'a str,
+    checked: bool,
+    on_toggle: impl Fn(bool) -> Message + 'a,
+    hint: &'a str,
+) -> Element<'a, Message> {
+    let t = toggler(checked).label(label).on_toggle(on_toggle);
+    if hint.is_empty() {
+        t.into()
+    } else {
+        column![t, text(hint).size(11).color(TEXT_FAINT)]
+            .spacing(2)
+            .into()
+    }
 }
 
 /// 设置表单字段标签。

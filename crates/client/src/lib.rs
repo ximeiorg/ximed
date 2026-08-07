@@ -5,6 +5,9 @@
 
 pub mod clipboard;
 pub mod config;
+pub mod direct;
 pub mod history;
+pub mod history_store;
+pub mod settings;
 pub mod sync;
 pub mod transport;
