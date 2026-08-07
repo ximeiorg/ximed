@@ -1161,7 +1161,7 @@ fn history_view(state: &UiState) -> Element<'_, Message> {
                         .size(14)
                         .font(SEMIBOLD)
                         .color(TEXT_MUTED),
-                    text("或服务器未启用 history 功能")
+                    text("复制或同步内容后将在此显示")
                         .size(12)
                         .color(TEXT_FAINT),
                 ]
@@ -1225,14 +1225,20 @@ fn history_card<'a>(
     window_width: f32,
     local_source: &'a str,
 ) -> Element<'a, Message> {
+    // 图片类型无文本预览，用占位文字展示（历史库不存像素数据）
+    let preview: &str = if item.kind == "image" {
+        "[图片]"
+    } else {
+        &item.text
+    };
     // 仅当内容超过 3 行时才允许展开：按内容区宽度估算换行行数。
-    let has_more = history_has_more(&item.text, window_width);
+    let has_more = history_has_more(preview, window_width);
 
     // 内容区：收起时固定高度 + 裁剪（最多 3 行）；展开时全文（限高滚动，隐藏内部滚动条避免浮在文字上）
     let content = if expanded {
         Element::from(
             container(
-                scrollable(text(&item.text).size(13).color(TEXT_MAIN))
+                scrollable(text(preview).size(13).color(TEXT_MAIN))
                     .height(Length::Fixed(HISTORY_EXPANDED_HEIGHT))
                     .direction(scrollable::Direction::Vertical(
                         scrollable::Scrollbar::hidden(),
@@ -1243,7 +1249,7 @@ fn history_card<'a>(
         )
     } else {
         Element::from(
-            container(text(&item.text).size(13).color(TEXT_MAIN))
+            container(text(preview).size(13).color(TEXT_MAIN))
                 .width(Length::Fill)
                 .height(Length::Fixed(HISTORY_CONTENT_HEIGHT))
                 .clip(true),

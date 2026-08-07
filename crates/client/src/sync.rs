@@ -10,10 +10,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use domain::hash::text_hash;
+use domain::hash::{sha256_hex, text_hash};
 use domain::profile::{Profile, ProfileType};
 
-use crate::clipboard::ClipboardAdapter;
+use crate::clipboard::{ClipboardAdapter, ImageData};
 use crate::config::ClientConfig;
 use crate::settings::SyncSettings;
 use crate::transport::{HttpTransport, Transport, WsTransport};
@@ -37,9 +37,16 @@ pub enum SyncAction {
     None,
     /// 推送本地 profile 到服务器。
     Push(Profile),
-    /// 从服务器写入本地剪贴板（携带来源设备，供通知）。
+    /// 从服务器写入本地剪贴板文本（携带来源设备，供通知）。
     Write {
         text: String,
+        source: Option<String>,
+    },
+    /// 从服务器写入本地剪贴板图片（RGBA8 像素，携带来源设备，供通知）。
+    WriteImage {
+        width: u32,
+        height: u32,
+        data: Vec<u8>,
         source: Option<String>,
     },
 }
@@ -124,8 +131,12 @@ impl SyncEngine {
         let poll = Duration::from_millis(self.cfg.poll_ms);
         let recv_timeout = poll.max(Duration::from_millis(100));
         loop {
-            // 分支 1：本地剪贴板轮询
-            let action = self.on_local_poll(self.clipboard.get());
+            // 分支 1：本地剪贴板轮询（图片优先；macOS 复制图片常同时带文本，同步图片更符合意图）
+            let image = self.clipboard.get_image();
+            let action = match image {
+                Some(img) => self.on_image_poll(Some(img)),
+                None => self.on_local_poll(self.clipboard.get()),
+            };
             self.execute(action).await;
             // 分支 2：远端事件（WS 阻塞接收 / HTTP 睡眠后拉取）
             match self.transport.next_event(recv_timeout).await {
@@ -148,18 +159,33 @@ impl SyncEngine {
         match self.transport.pull().await {
             Ok(Some(remote)) => {
                 self.report_status(SyncStatus::Online);
-                if remote.r#type == ProfileType::Text {
-                    let local = self.clipboard.get();
-                    let should_adopt = match local {
-                        None => true,
-                        Some(l) => text_hash(&l) != remote.hash,
-                    };
-                    if should_adopt {
-                        let action = self.apply_remote(&remote);
-                        if matches!(action, SyncAction::Write { .. }) {
-                            tracing::debug!("adopted server clipboard on start");
+                match remote.r#type {
+                    ProfileType::Text => {
+                        let local = self.clipboard.get();
+                        let should_adopt = match local {
+                            None => true,
+                            Some(l) => text_hash(&l) != remote.hash,
+                        };
+                        if should_adopt {
+                            let action = self.apply_remote(&remote);
+                            if matches!(action, SyncAction::Write { .. }) {
+                                tracing::debug!("adopted server clipboard on start");
+                            }
+                            self.execute(action).await;
                         }
                     }
+                    ProfileType::Image => {
+                        let local_hash = self.clipboard.get_image().map(|i| sha256_hex(&i.bytes));
+                        let should_adopt = local_hash.as_deref() != Some(remote.hash.as_str());
+                        if should_adopt {
+                            let action = self.apply_remote(&remote);
+                            if matches!(action, SyncAction::WriteImage { .. }) {
+                                tracing::debug!("adopted server image on start");
+                            }
+                            self.execute(action).await;
+                        }
+                    }
+                    _ => {}
                 }
             }
             Ok(None) => self.report_status(SyncStatus::Online),
@@ -167,20 +193,28 @@ impl SyncEngine {
         }
     }
 
-    /// 本地轮询决策（纯逻辑，可单测）：剪贴板变化且非自写回声 → Push。
+    /// 推送退避检查：退避窗口内返回 true（不推送）；窗口结束后撤销 last_hash 允许重试。
+    fn push_backoff_active(&mut self) -> bool {
+        if let Some(deadline) = self.retry_until {
+            if std::time::Instant::now() < deadline {
+                return true;
+            }
+            // 退避结束：撤销 last_hash，允许重试上次失败的内容
+            self.retry_until = None;
+            self.last_hash = None;
+        }
+        false
+    }
+
+    /// 本地文本轮询决策（纯逻辑，可单测）：剪贴板变化且非自写回声 → Push。
     pub fn on_local_poll(&mut self, local: Option<String>) -> SyncAction {
         // 同步主开关或推送开关关闭：不推送
         if !self.sync.switch_on || !self.sync.push_switch_on {
             return SyncAction::None;
         }
         // 推送失败退避窗口内不重复尝试，避免 server 未启动时每轮轮询都重试刷日志
-        if let Some(deadline) = self.retry_until {
-            if std::time::Instant::now() < deadline {
-                return SyncAction::None;
-            }
-            // 退避结束：撤销 last_hash，允许重试上次失败的内容
-            self.retry_until = None;
-            self.last_hash = None;
+        if self.push_backoff_active() {
+            return SyncAction::None;
         }
         let Some(text) = local else {
             return SyncAction::None;
@@ -196,8 +230,47 @@ impl SyncEngine {
         if self.last_hash.as_deref() == Some(&hash) {
             return SyncAction::None;
         }
-        // 类型白名单 + 大小上限（当前仅文本，size 恒小于 10MB 上限；为图片/文件预留）
         let profile = Profile::from_text(text, Some(self.cfg.source.clone()));
+        if !self.sync.type_allowed(profile.r#type) {
+            return SyncAction::None;
+        }
+        if profile.size as u64 > self.sync.max_file_byte {
+            return SyncAction::None;
+        }
+        self.last_hash = Some(hash);
+        SyncAction::Push(profile)
+    }
+
+    /// 本地图片轮询决策（纯逻辑，可单测）：剪贴板图片变化且非自写回声 → Push。
+    pub fn on_image_poll(&mut self, image: Option<ImageData>) -> SyncAction {
+        // 同步主开关或推送开关关闭：不推送
+        if !self.sync.switch_on || !self.sync.push_switch_on {
+            return SyncAction::None;
+        }
+        // 推送失败退避窗口内不重复尝试
+        if self.push_backoff_active() {
+            return SyncAction::None;
+        }
+        let Some(image) = image else {
+            return SyncAction::None;
+        };
+        if image.bytes.is_empty() {
+            return SyncAction::None;
+        }
+        let hash = sha256_hex(&image.bytes);
+        // 自写回声：内容 hash 与自写一致 → 跳过
+        if self.self_written.as_deref() == Some(&hash) {
+            return SyncAction::None;
+        }
+        if self.last_hash.as_deref() == Some(&hash) {
+            return SyncAction::None;
+        }
+        let profile = Profile::from_image(
+            image.bytes.clone(),
+            image.width,
+            image.height,
+            Some(self.cfg.source.clone()),
+        );
         if !self.sync.type_allowed(profile.r#type) {
             return SyncAction::None;
         }
@@ -214,26 +287,56 @@ impl SyncEngine {
         if !self.sync.switch_on || !self.sync.pull_switch_on {
             return SyncAction::None;
         }
-        if remote.r#type != ProfileType::Text || remote.text.is_empty() {
-            return SyncAction::None;
-        }
-        let local = self.clipboard.get();
-        let local_hash = local.as_deref().map(text_hash);
-        if local_hash.as_deref() == Some(&remote.hash) {
-            // 本地已是该内容，仅记录 last_hash 避免重复推送
-            self.last_hash = Some(remote.hash.clone());
-            return SyncAction::None;
-        }
-        if self.self_written.as_deref() == Some(&remote.hash) {
-            // 自写内容被服务器广播回来 → 忽略
-            self.last_hash = Some(remote.hash.clone());
-            return SyncAction::None;
-        }
-        self.self_written = Some(remote.hash.clone());
-        self.last_hash = Some(remote.hash.clone());
-        SyncAction::Write {
-            text: remote.text.clone(),
-            source: remote.source.clone(),
+        match remote.r#type {
+            ProfileType::Text => {
+                if remote.text.is_empty() {
+                    return SyncAction::None;
+                }
+                let local = self.clipboard.get();
+                let local_hash = local.as_deref().map(text_hash);
+                if local_hash.as_deref() == Some(&remote.hash) {
+                    // 本地已是该内容，仅记录 last_hash 避免重复推送
+                    self.last_hash = Some(remote.hash.clone());
+                    return SyncAction::None;
+                }
+                if self.self_written.as_deref() == Some(&remote.hash) {
+                    // 自写内容被服务器广播回来 → 忽略
+                    self.last_hash = Some(remote.hash.clone());
+                    return SyncAction::None;
+                }
+                self.self_written = Some(remote.hash.clone());
+                self.last_hash = Some(remote.hash.clone());
+                SyncAction::Write {
+                    text: remote.text.clone(),
+                    source: remote.source.clone(),
+                }
+            }
+            ProfileType::Image => {
+                let Some(data) = remote.data.as_ref() else {
+                    return SyncAction::None;
+                };
+                if data.is_empty() {
+                    return SyncAction::None;
+                }
+                let local_hash = self.clipboard.get_image().map(|i| sha256_hex(&i.bytes));
+                if local_hash.as_deref() == Some(&remote.hash) {
+                    self.last_hash = Some(remote.hash.clone());
+                    return SyncAction::None;
+                }
+                if self.self_written.as_deref() == Some(&remote.hash) {
+                    self.last_hash = Some(remote.hash.clone());
+                    return SyncAction::None;
+                }
+                self.self_written = Some(remote.hash.clone());
+                self.last_hash = Some(remote.hash.clone());
+                SyncAction::WriteImage {
+                    width: remote.width.unwrap_or(0),
+                    height: remote.height.unwrap_or(0),
+                    data: data.clone(),
+                    source: remote.source.clone(),
+                }
+            }
+            ProfileType::File | ProfileType::Group | ProfileType::None => SyncAction::None,
         }
     }
 
@@ -267,6 +370,33 @@ impl SyncEngine {
                     h(&Profile::from_text(text.clone(), source.clone()));
                 }
                 // 通知开关：收到远端内容时告知 UI（来源设备）
+                if self.sync.notify_on_downloaded
+                    && let Some(h) = &self.download_handler
+                {
+                    h(source);
+                }
+            }
+            SyncAction::WriteImage {
+                width,
+                height,
+                data,
+                source,
+            } => {
+                self.clipboard.set_image(&ImageData {
+                    width,
+                    height,
+                    bytes: data.clone(),
+                });
+                // 历史记录：远端图片写入本地剪贴板
+                if let Some(h) = &self.history_handler {
+                    h(&Profile::from_image(
+                        data.clone(),
+                        width,
+                        height,
+                        source.clone(),
+                    ));
+                }
+                // 通知开关：收到远端图片时告知 UI（来源设备）
                 if self.sync.notify_on_downloaded
                     && let Some(h) = &self.download_handler
                 {
@@ -583,5 +713,174 @@ mod tests {
         e.execute(a).await;
         assert_eq!(cb.get().as_deref(), Some("from-server"));
         assert!(seen.lock().unwrap().is_empty());
+    }
+
+    // ---------- 图片同步 ----------
+
+    #[test]
+    fn local_image_triggers_push_and_echo_is_suppressed() {
+        let t = Arc::new(MockTransport::new(None));
+        let (mut e, cb) = engine_with_transport("dev-a", t.clone());
+        let bytes: Vec<u8> = (0..64).map(|i| (i % 251) as u8).collect();
+        let hash = sha256_hex(&bytes);
+        cb.simulate_external_image(8, 8, bytes.clone());
+        let img = cb.get_image().unwrap();
+        let a = e.on_image_poll(Some(img));
+        match &a {
+            SyncAction::Push(p) => {
+                assert_eq!(p.r#type, ProfileType::Image);
+                assert_eq!(p.hash, hash);
+                assert_eq!(p.width, Some(8));
+                assert_eq!(p.height, Some(8));
+                assert_eq!(p.data.as_deref(), Some(bytes.as_slice()));
+            }
+            other => panic!("expected image push, got {other:?}"),
+        }
+        // 回声：远端把刚推送的图片广播回来 → 忽略
+        let pushed = Profile::from_image(bytes, 8, 8, Some("dev-a".to_string()));
+        assert_eq!(
+            e.apply_remote(&pushed),
+            SyncAction::None,
+            "image echo must be ignored"
+        );
+    }
+
+    #[test]
+    fn remote_image_writes_local_and_suppresses_echo() {
+        let t = Arc::new(MockTransport::new(None));
+        let (mut e, cb) = engine_with_transport("dev-a", t.clone());
+        let bytes: Vec<u8> = (0..64).map(|i| (i % 251) as u8).collect();
+        let remote = Profile::from_image(bytes.clone(), 8, 8, Some("dev-b".to_string()));
+        let a = e.apply_remote(&remote);
+        match &a {
+            SyncAction::WriteImage {
+                width,
+                height,
+                data,
+                source,
+            } => {
+                assert_eq!(*width, 8);
+                assert_eq!(*height, 8);
+                assert_eq!(data, &bytes);
+                assert_eq!(source.as_deref(), Some("dev-b"));
+            }
+            other => panic!("expected image write, got {other:?}"),
+        }
+        // 执行写本地
+        if let SyncAction::WriteImage {
+            width,
+            height,
+            data,
+            source,
+        } = a
+        {
+            e.clipboard.set_image(&ImageData {
+                width,
+                height,
+                bytes: data,
+            });
+            assert_eq!(source.as_deref(), Some("dev-b"));
+        }
+        let written = cb.get_image().unwrap();
+        assert_eq!(written.width, 8);
+        assert_eq!(written.height, 8);
+        assert_eq!(written.bytes, bytes);
+        // 自写抑制：本地轮询到同一图片不应再推送
+        let a2 = e.on_image_poll(Some(cb.get_image().unwrap()));
+        assert_eq!(a2, SyncAction::None);
+    }
+
+    #[test]
+    fn image_over_size_limit_is_ignored() {
+        let t = Arc::new(MockTransport::new(None));
+        let (mut e, cb) = engine_with_transport("dev-a", t.clone());
+        e.sync.switch_on = true;
+        e.sync.max_file_byte = 10;
+        cb.simulate_external_image(8, 8, vec![0u8; 64]);
+        assert_eq!(e.on_image_poll(cb.get_image()), SyncAction::None);
+    }
+
+    #[test]
+    fn upload_image_disabled_suppresses_image_push() {
+        let t = Arc::new(MockTransport::new(None));
+        let (mut e, cb) = engine_with_transport("dev-a", t.clone());
+        e.sync.switch_on = true;
+        e.sync.upload_image = false;
+        cb.simulate_external_image(8, 8, vec![0u8; 64]);
+        assert_eq!(e.on_image_poll(cb.get_image()), SyncAction::None);
+    }
+
+    #[test]
+    fn remote_image_without_data_is_ignored() {
+        let t = Arc::new(MockTransport::new(None));
+        let (mut e, _cb) = engine_with_transport("dev-a", t.clone());
+        let remote = Profile::from_image(vec![1u8; 4], 2, 2, Some("dev-b".to_string()));
+        let mut broken = remote.clone();
+        broken.data = None;
+        assert_eq!(e.apply_remote(&broken), SyncAction::None);
+    }
+
+    #[tokio::test]
+    async fn image_download_notification_carries_source() {
+        let t = Arc::new(MockTransport::new(None));
+        let (mut e, cb) = engine_with_transport("dev-a", t.clone());
+        e.sync.switch_on = true;
+        e.sync.notify_on_downloaded = true;
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_cb = seen.clone();
+        e.set_download_handler(Arc::new(move |src: Option<String>| {
+            seen_cb.lock().unwrap().push(src);
+        }));
+        let remote = Profile::from_image(vec![7u8; 16], 4, 4, Some("dev-b".to_string()));
+        let a = e.apply_remote(&remote);
+        e.execute(a).await;
+        let written = cb.get_image().unwrap();
+        assert_eq!(written.bytes, vec![7u8; 16]);
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            &[Some("dev-b".to_string())]
+        );
+    }
+
+    #[test]
+    fn image_poll_respects_master_and_push_switch() {
+        let t = Arc::new(MockTransport::new(None));
+        let (mut e, cb) = engine_with_transport("dev-a", t.clone());
+        e.sync.switch_on = false;
+        cb.simulate_external_image(2, 2, vec![0u8; 16]);
+        assert_eq!(e.on_image_poll(cb.get_image()), SyncAction::None);
+        e.sync.switch_on = true;
+        e.sync.push_switch_on = false;
+        assert_eq!(e.on_image_poll(cb.get_image()), SyncAction::None);
+    }
+
+    #[tokio::test]
+    async fn startup_pull_executes_adoption_action() {
+        // 回归：启动采纳只做决策未执行 → 文本/图片都没有真正写入本地剪贴板
+        let bytes: Vec<u8> = (0..64).map(|i| (i % 251) as u8).collect();
+        let remote = Profile::from_image(bytes.clone(), 8, 8, Some("dev-b".to_string()));
+        let t = Arc::new(MockTransport::new(Some(remote)));
+        let (mut e, cb) = engine_with_transport("dev-a", t.clone());
+        e.run_startup_pull().await;
+        // 启动采纳必须执行 write：本地剪贴板写入远端图片
+        let written = cb.get_image().expect("startup adoption must write image");
+        assert_eq!(written.bytes, bytes);
+        assert_eq!(written.width, 8);
+        assert_eq!(written.height, 8);
+        // 写入后自写抑制：同一内容不再推送
+        assert_eq!(
+            e.on_image_poll(Some(cb.get_image().unwrap())),
+            SyncAction::None
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_pull_executes_text_adoption() {
+        // 文本启动采纳同样执行写剪贴板
+        let remote = Profile::from_text("server-text", Some("dev-b".to_string()));
+        let t = Arc::new(MockTransport::new(Some(remote)));
+        let (mut e, cb) = engine_with_transport("dev-a", t.clone());
+        e.run_startup_pull().await;
+        assert_eq!(cb.get().as_deref(), Some("server-text"));
     }
 }

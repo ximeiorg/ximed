@@ -146,6 +146,39 @@ async fn s3_direct_push_pull_roundtrip() {
 }
 
 #[tokio::test]
+async fn webdav_direct_image_profile_roundtrip() {
+    // 图片 profile（内嵌 base64 data）经直连通道完整往返
+    let srv = MockServer::spawn();
+    let t = WebDavTransport::new(&srv.url("/dav"), "user", "pass");
+    let bytes: Vec<u8> = (0..64).map(|i| (i % 251) as u8).collect();
+    let profile = Profile::from_image(bytes, 8, 8, Some("dev-a".to_string()));
+
+    t.push(&profile).await.expect("push must succeed");
+    let pulled = t
+        .pull()
+        .await
+        .expect("pull must succeed")
+        .expect("must be Some");
+    assert_eq!(pulled, profile, "image data must survive webdav roundtrip");
+}
+
+#[tokio::test]
+async fn s3_direct_image_profile_roundtrip() {
+    let srv = MockServer::spawn();
+    let t = S3Transport::new(&srv.url(""), "bucket", "us-east-1", "AKIAEXAMPLE", "secret");
+    let bytes: Vec<u8> = (0..256).map(|i| (i * 3 % 255) as u8).collect();
+    let profile = Profile::from_image(bytes, 16, 16, Some("dev-b".to_string()));
+
+    t.push(&profile).await.expect("push must succeed");
+    let pulled = t
+        .pull()
+        .await
+        .expect("pull must succeed")
+        .expect("must be Some");
+    assert_eq!(pulled, profile, "image data must survive s3 roundtrip");
+}
+
+#[tokio::test]
 async fn s3_direct_request_carries_auth_headers() {
     // 扩展 MockServer 记录请求头比较麻烦，这里用独立实现：
     // 验证签名头存在（Authorization / x-amz-date / x-amz-content-sha256）。

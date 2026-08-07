@@ -24,6 +24,7 @@ pub mod tray;
 #[cfg(feature = "tray")]
 pub mod ui;
 
+#[cfg(feature = "tray")]
 use std::path::PathBuf;
 use std::sync::Arc;
 

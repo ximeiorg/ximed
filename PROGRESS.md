@@ -1,77 +1,54 @@
 # PROGRESS
 
-> 更新：2026-08-06 · 阶段：三形态架构 + 发布打包（CI nightly/release）实现完成（未提交）
+> 更新：2026-08-07 · 阶段：同步设置框架 + 历史上限 + client 直连 + 直连本地历史 + 历史面板来源区分 + 图片同步（未提交）
 
 ## 当前状态
 
-- **三形态架构完成**：
-  - Form 1 `ximed-server` 二进制：仅服务器，release ~3MB
-  - Form 2 `ximed-desktop` 二进制：同进程 client + iced 窗口 + 托盘 + **受控 server**（不自动启动，UI 手动启停）；**零配置启动**（未配密码时自动生成随机密码落盘 `{data_dir}/auth_password`，权限 0600，client 复用）
-  - Form 3 `ximed-client` 二进制：仅客户端 daemon + 托盘（默认构建）；无 UI 构建下退化为纯 daemon
-  - `crates/app` 已重构为 **lib + 三个 bin**（`src/bin/ximed-server.rs` / `ximed-desktop.rs`（required-features=tray）/ `ximed-client.rs`）；`--no-default-features` 只出 server + 纯 daemon client
-- **发布打包（CI）**：
-  - `.github/workflows/build-packages.yml`（可复用，`publish` 输入：none/tag/nightly）：Windows x86_64 + Linux x86_64/aarch64/armv7(musl) + macOS aarch64/x86_64 矩阵
-  - server 包 = 裸二进制归档（zip/tar.gz + systemd unit）；desktop 包 = 桌面包格式（Windows NSIS setup.exe + 便携 zip / Linux deb + AppImage / macOS dmg）
-  - 桌面包由 **cargo-packager**（Tauri 同源）生成，配置在 `[package.metadata.packager]`（crates/app/Cargo.toml）
-  - Windows exe 图标：`assets/icon.ico`（多尺寸）+ build.rs/embed-resource 嵌入 PE 资源
-  - `.github/workflows/nightly.yml`：每日 02:00 UTC + 手动；产物文件名带构建日期；`publish=nightly` 删除旧并重建**滚动 nightly release**（始终一个，含最新全部包）
-  - `.github/workflows/release.yml`：v* tag 触发，`publish=tag` 发布版本 GitHub Release
-  - `.github/workflows/ci.yml`：每次 push/PR 检查（fmt + clippy -D warnings 默认与无默认 feature + 三平台全量测试）
-- **UI 左右分栏**（iced）：左侧导航（状态/剪贴板历史）+ 右侧内容面板
-  - 状态面板：server / engine / 设备状态 + **本地服务器控制区**（仅 desktop 显示：开启/重启/关闭 + 打开配置文件所在目录）
-  - 历史面板：后台线程周期拉取 `/api/clipboard/history`（3s）显示剪贴板历史列表
-  - **配置编辑面板已移除**：不再在 UI 中编辑 ximed.toml，改为控制区打开配置文件所在目录（macOS `open` / Linux `xdg-open`）
-- **server 受管启动**：`server::run_managed(settings, shutdown_watch)` 支持优雅停止（HTTP `with_graceful_shutdown` / TLS `Handle::graceful_shutdown`），desktop 后台 `server_control_loop` 响应 UI 命令启停；UI 经新 `UiCmd` 通道命令后台
-- **密码支持配置文件名直写**（环境变量优先，非必需）：`auth.password` / `[client] password` 字段
-- **UI 框架 iced 0.14**：**wgpu（GPU，Metal/Vulkan）优先 + tiny-skia（CPU）自动兜底**（低性能设备仅跑 server，不受影响）；完整构建 32s
-- **67 个测试全绿**（含 `run_managed` 优雅停止测试）；无 openssl；无编译警告
-- **构建方式（详见设计文档 8.5）**：
-  - `cargo build --release -p server` → Form 1（3MB）
-  - `cargo build --release -p app` → Form 2/3 统一二进制（含托盘）
-  - `cargo build --release -p app --no-default-features` → 精简构建（仅 server + 纯 daemon client）
+- **同步设置框架（SyncSettings）**：主开关默认关、push/pull 开关、上传类型白名单（text/image/single_file）、`max_file_byte`（10MB）、`notify_on_downloaded`；设置面板同步卡片；`ApplySettings` 重建引擎；下载通知回调
+- **历史上限**：`HistoryRepo::open_with_limit` + insert 修剪；server `history.max_items=100`（T1 config）；handler clamp；client 跟随
+- **client 直连 webdav/s3**：`AdapterKind{Server,WebDav,S3}` + `direct/{direct,webdav,s3,sigv4}.rs`（手写 SigV4）；同步目标卡片置顶；直连数据格式为单个 `clipboard/current.json`
+- **直连本地历史**：`client::history_store::LocalHistory`（复用 store::HistoryRepo，seq=微秒时间戳）+ `SyncEngine::set_history_handler`；desktop/client-only 历史轮询统一读本地 `client-history.db`
+- **同步模型**：跨设备只同步"当前焦点"（单键 current），本地保存完整历史（含 source）；`self_written` 防回环
+- **历史面板来源区分**：本机记录灰 tag「本机」；远程来源强调色 tag「远程 · 设备」
+- **图片同步（本次）**：Profile 内嵌 base64 data/width/height；ClipboardAdapter 增 `get_image/set_image`（arboard）；引擎图片优先轮询 + 远端 image 写剪贴板；server 校验 image 并存储；**端到端实测通过**（dev-a 推 1920x1080 截图 → server 存储 → dev-b 启动采纳写入本地剪贴板）
+- **125 个测试全绿**；fmt 干净；clippy 无项目警告；`cargo check -p app --no-default-features` 通过
 
 ## 下一步
 
 1. 审查未提交变更后提交
-2. 端到端实测：desktop 点「开启」→ 本地 server 启动 → 真实剪贴板复制 → 同步到其他设备
-3. 触发一次 CI 验证：nightly 手动跑通，确认各平台桌面包格式产出
+2. 文件同步（single_file 白名单目前仅文本/图片生效）：需 macOS/Linux/Windows 剪贴板文件路径读写（NSPasteboard / x11 / CF_HDROP），工程量最大
+3. 真实多设备端到端验证（desktop 开启 server → 桌面复制文本/图片 → 另一设备同步）
 
 ## 已完成
 
-- [x] P1-P7 全部（历史记录、WebDAV、HTTPS、文件同步，见下）
-- [x] **三形态架构（本次）**：
-  - **server 库化**：`crates/server/src/lib.rs` 暴露 `run(settings)` / `run_managed` / `init_tracing` / `check_auth_password`，`main.rs` 变薄入口；行为不变，测试保绿
-  - **client crate（新增）**：`ClipboardAdapter`（arboard，跨平台）+ `WsTransport`（tokio-tungstenite Basic Auth）/`HttpTransport`（reqwest rustls 兜底）+ `SyncEngine`（轮询本地 + 远端事件，hash 去重 + 自写回声抑制 + 纯决策函数可单测）；`ClientConfig::load`（config-rs `[client]` 节 + `XIMED_CLIENT_*` env）
-  - **app crate（新增）**：`ximed` 统一二进制，clap 子命令 `server` / `client` / `desktop`
-  - **desktop 形态**：iced 窗口（主线程）+ 后台 tokio 线程承载 client 引擎 + 历史轮询 + **受控 server**；server 不自动启动，UI 控制区按钮经 `UiCmd` 通道启停
-  - **托盘**：tray-icon + muda（`tray` feature 门控）；菜单（状态/显示窗口/退出）+ 左键点击；事件经 proxy 转发 iced
-  - **部署文件**：`deploy/ximed.desktop.systemd.service`（桌面 systemd user unit）+ `deploy/com.ximed.desktop.plist`（macOS launchd，含 LSUIElement 说明）+ `deploy/ximed.desktop.toml.example`（桌面配置示例）
-- [x] **发布打包（本次）**：
-  - **app crate 拆 lib + 三 bin**：`ximed-server` / `ximed-desktop`(required-features tray) / `ximed-client`；server 包 `--no-default-features` 最小体积
-  - **桌面图标**：`assets/icon.png`(512) + `assets/icon.ico`(多尺寸)；iced 窗口图标（`window::Settings.icon`）+ Windows exe 图标（build.rs + embed-resource）
-  - **cargo-packager 配置**：`[package.metadata.packager]`（deb/nsis 配置），CI 里 `cargo packager --target <triple> --formats <f>` 出 NSIS/deb/AppImage/dmg；`cargo install cargo-packager --locked`
-  - **三个 workflow**：`build-packages.yml`（workflow_call 矩阵）/ `nightly.yml`（schedule+manual，产物带日期）/ `release.yml`（v* tag → GitHub Release）
-  - 本地已验证：`cargo packager --formats nsis` 产出 `ximed-desktop_0.1.0_x64-setup.exe`；exe 图标资源嵌入确认
-- [x] **CI 检查（本次）**：
-  - 全仓 `cargo fmt --all` 统一格式（含 CRLF/LF 行尾）
-  - 修复 clippy -D warnings 告警：let-chain 折叠嵌套 if（store/local、http、ws、desktop）、`BackendKind::from_str`→`from_name`（避免与 std FromStr 混淆）、无用 `.into()`、`MockClipboard` 补 Default、`SyncMode` derive Default、`if let`/`if` 替换单分支 match、`await_holding_lock`（测试 env_lock 场景 allow）
-  - 75 个测试全绿；`cargo check -p app --no-default-features` 通过
-  - **Linux 托盘依赖修复**：muda 0.19 / tray-icon 0.24 关掉默认 feature 后 Linux 无平台实现（muda `unresolved import self::platform`）→ 显式启用两者 `gtk` feature；CI Linux 任务补装 `libgtk-3-dev libayatana-appindicator3-dev`（tray-icon gtk 会拉 libappindicator）
-- [x] P6 部署优化 / P7a HTTPS / P7b WebDAV / P7c 历史记录 / P7d 文件同步
+- [x] **同步设置框架**：`client::settings::SyncSettings` + 引擎遵循（主开关/推送/拉取/白名单/大小/通知）+ UI 卡片 + 引擎重建 + 下载通知
+- [x] **历史上限 100**：store 修剪 SQL（`insert_prunes_beyond_max_items`、`prune_keeps_upserted_seq`）
+- [x] **client 直连**：WebDAV（PUT/GET current.json + Basic Auth）、S3（手写 SigV4，仅 hmac/sha2/hex）、4 个 TCP mock 端到端测试；删除过时 `docs/design/clipboard-sync.md`
+- [x] **直连本地历史**：`history_store.rs`（record 写 source）、Push 成功/Write 剪贴板时记录、3s 轮询发 `UiMsg::History`、server 适配器不再 HTTP 拉历史作为 UI 来源
+- [x] **历史来源视觉区分**：`history_tag_remote` 强调色 tag；远程「远程 · 设备名」/本机「本机」；移除 desktop `HttpTransport` import
+- [x] **图片同步（本次）**：
+  - domain：Profile 增 `data`（base64 序列化，`skip_serializing_if none` 保持旧 JSON 兼容）/`width`/`height` + `from_image`（hash=SHA256(data)）
+  - client clipboard：`ImageData{width,height,bytes}` + `get_image/set_image`（arboard，worker 线程可用）
+  - client sync：图片优先轮询 `on_image_poll`、`SyncAction::WriteImage`、`apply_remote` 支持 Image、startup_pull 支持图片并**执行采纳 action**（修复：原只决策不执行，文本分支 WS 广播掩盖）
+  - server：`default.toml`/serde default `max_frame_size` 1MB→16MB（对齐 10MB 上限 + base64 膨胀）；`service::ClipboardService.validate_profile` 支持 Image（hash/size/data 校验）；历史 kind 增 "image"
+  - UI：历史卡片 image 类型显示「[图片]」占位；空态文案更新
+  - 直连集成测试增 webdav/s3 图片往返；client 引擎增 8 个图片测试；service 增 image 校验测试
+  - 端到端实测：截屏 → daemon client 推送（server `type:image, 1920x1080, source`）→ 另一 client 启动采纳写入剪贴板 ✓
+- [x] 图标修复：librsvg 渲染透明 PNG + 重新生成 icns/ico；侧栏真实图标（iced image + include_bytes）
+- [x] 三形态架构 + 发布打包 + CI（见下）
 
 ## 待办（后续功能点）
 
 - [ ] 审查未提交变更后 GPG 提交
-- [ ] 真实剪贴板端到端验证（desktop 手动开启 server → 桌面复制 → 手机/另一桌面同步）
+- [ ] 文件同步（跨平台剪贴板文件路径读写，工作量最大）
 - [ ] macOS .app 打包（LSUIElement + 图标）
-- [ ] P5 Xime 宿主扩展 + 采集插件（待确认）
 - [ ] S3 存储后端（按需，大依赖）
 
 ## 关键实现细节（本次会话）
 
-- iced 0.14 函数式 API：`application(boot, update, view)` + `subscription(Fn(&State) -> Subscription)` + `.theme(Fn)`
-- 跨线程桥接：std mpsc channel（后台线程 `tx.send`）+ `Subscription::run_with(RxId(rx), fn)` 轮询注入；`RxId` 实现 `Hash + Clone + Eq` 满足 subscription data 约束
-- **UI → 后台命令通道**：`UiCmd`（ServerStart/Restart/Stop/OpenConfigDir）经 std mpsc；`server_control_loop` 200ms 轮询响应，watch channel 触发 `server::run_managed` 优雅停止
-- tray-icon 0.24 / muda 0.19：`MenuEvent::receiver()` crossbeam channel 任意线程轮询；`Rc<MenuId>` 非 Send，轮询线程只捕获 id 字符串；托盘事件经 UI channel 转发（含 Quit → `UiMsg::Quit` → `iced::exit()`）
-- iced 渲染：**wgpu（GPU）优先 + tiny-skia 自动兜底**；tiny-skia 软渲染下 `Shadow` 逐像素计算，大面积容器不用阴影（Retina 下 ~2.5M 物理像素/帧会卡）
-- 依赖在 app crate（feature `tray`），server crate 零 UI 依赖，保持低端设备轻量
+- **图片载荷**：Profile 内嵌 base64 `data`（`serde with` 自定义序列化，避免数字数组）；传输/server/webdav/s3/历史存储零改动，仅 server body limit 与校验放开
+- **server body limit 陷阱**：`MemorySource` 内嵌 `default.toml`（include_str!）优先级高于 serde default fn，改默认值必须改 `default.toml` 而非 `#[serde(default)]`；axum DefaultBodyLimit 拒绝超限 body（413）
+- **引擎 startup_pull bug**：决策（apply_remote）后未 `execute`，启动采纳从未写入剪贴板；文本场景被 WS next_event 广播掩盖，图片场景暴露；已修复并补回归测试
+- **macOS 剪贴板**：arboard `get_image/set_image` 在 tokio worker 线程可用（无主线程依赖）；`screencapture -x -c` 截图可被 arboard 读取（RGBA8）
+- 直连凭据：环境变量优先，设置面板明文字段兜底；避免 `unsafe set_var`（Rust 2024）
+- SigV4 手写：`host;x-amz-content-sha256;x-amz-date` 签署；`#[allow(clippy::too_many_arguments)]`

@@ -264,8 +264,10 @@ fn default_password_env() -> String {
 fn default_max_connections() -> usize {
     32
 }
+/// 链路层帧/body 上限默认值：对齐 client `max_file_byte`（10MB）上限。
+/// base64 内嵌图片数据膨胀 4/3，加 JSON 结构开销，取 16MB 覆盖 10MB 图片。
 fn default_max_frame_size() -> usize {
-    1024 * 1024
+    16 * 1024 * 1024
 }
 fn default_idle_timeout_secs() -> u64 {
     60
@@ -302,7 +304,12 @@ mod tests {
         assert_eq!(s.server().log_level, "info");
         assert_eq!(s.auth().username, "alice");
         assert_eq!(s.auth().max_connections, 32);
-        assert_eq!(s.clipboard().max_frame_size, 1024 * 1024);
+        assert_eq!(
+            s.clipboard().max_frame_size,
+            16 * 1024 * 1024,
+            "actual={}",
+            s.clipboard().max_frame_size
+        );
         assert_eq!(s.clipboard().idle_timeout_secs, 60);
         assert_eq!(s.clipboard().heartbeat_interval_secs, 30);
         assert!(s.http().enabled);

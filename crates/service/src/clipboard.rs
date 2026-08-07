@@ -117,7 +117,7 @@ impl ClipboardService {
                 .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
     }
 
-    /// 校验上传 profile：hash 必须是小写 hex SHA256 且与内容一致；size 与文本实际字节一致。
+    /// 校验上传 profile：hash 必须是小写 hex SHA256 且与内容一致；size 与内容实际字节一致。
     pub fn validate_profile(profile: &Profile) -> Result<(), ClipboardError> {
         if !Self::validate_hash(&profile.hash) {
             return Err(ClipboardError::Invalid("hash must be lowercase hex sha256"));
@@ -133,8 +133,24 @@ impl ClipboardService {
                     return Err(ClipboardError::Invalid("size does not match content"));
                 }
             }
+            ProfileType::Image => {
+                // 图片：hash 必须等于 SHA256(data)，size 等于像素字节数（防虚报/损坏）
+                let Some(data) = profile.data.as_ref() else {
+                    return Err(ClipboardError::Invalid("image profile missing data"));
+                };
+                if data.is_empty() {
+                    return Err(ClipboardError::Invalid("image data is empty"));
+                }
+                let expected = domain::hash::sha256_hex(data);
+                if profile.hash != expected {
+                    return Err(ClipboardError::Invalid("hash does not match content"));
+                }
+                if profile.size != data.len() {
+                    return Err(ClipboardError::Invalid("size does not match content"));
+                }
+            }
             _ => {
-                // 非 text 类型（file/image/group）P7 支持，暂拒绝上传
+                // 文件/多文件（group）类型 P7 预留，暂拒绝上传
                 return Err(ClipboardError::Invalid("unsupported profile type"));
             }
         }
@@ -198,6 +214,7 @@ impl ClipboardService {
         if let Some(hist) = ctx.history_repo.as_ref() {
             let kind = match profile.r#type {
                 ProfileType::Text => "text",
+                ProfileType::Image => "image",
                 _ => "other",
             };
             let created_at = std::time::SystemTime::now()
@@ -296,6 +313,34 @@ mod tests {
         assert!(ClipboardService::validate_profile(&p).is_err());
 
         assert!(ClipboardService::validate_profile(&profile("hello", None)).is_ok());
+    }
+
+    #[test]
+    fn validate_image_profile_accepts_valid_and_rejects_bad() {
+        let data = vec![0u8; 64];
+        // 合法图片 profile
+        let img = Profile::from_image(data.clone(), 8, 8, Some("dev-a".to_string()));
+        assert!(ClipboardService::validate_profile(&img).is_ok());
+
+        // hash 与内容不符
+        let mut bad_hash = img.clone();
+        bad_hash.hash = "a".repeat(64);
+        assert!(ClipboardService::validate_profile(&bad_hash).is_err());
+
+        // size 与数据不符
+        let mut bad_size = img.clone();
+        bad_size.size = 1;
+        assert!(ClipboardService::validate_profile(&bad_size).is_err());
+
+        // 缺失 data 字段
+        let mut no_data = img.clone();
+        no_data.data = None;
+        assert!(ClipboardService::validate_profile(&no_data).is_err());
+
+        // 空数据
+        let mut empty = Profile::from_image(vec![], 0, 0, None);
+        empty.hash = domain::hash::sha256_hex(&[]);
+        assert!(ClipboardService::validate_profile(&empty).is_err());
     }
 
     #[tokio::test]
