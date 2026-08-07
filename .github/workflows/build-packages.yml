@@ -53,14 +53,13 @@ jobs:
             apt: true
             cache: true
           # Linux ARM：musl 静态链接，仅 server（桌面 UI 在 ARM musl 上不可构建）
+          # actions-rust-cross 会自动用 cross 构建非 x86 目标
           - os: ubuntu-latest
             target: aarch64-unknown-linux-musl
             packages: "server"
-            cross: true
           - os: ubuntu-latest
             target: armv7-unknown-linux-musleabihf
             packages: "server"
-            cross: true
           - os: macos-14
             target: aarch64-apple-darwin
             packages: "server desktop"
@@ -90,32 +89,25 @@ jobs:
             libxkbcommon-dev libwayland-dev libgtk-3-dev libayatana-appindicator3-dev \
             libgl1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev
 
-      - name: Install cross
-        if: matrix.cross
-        uses: cross-rs/cross@v0.2.5
-
       - name: Cache cargo
         if: matrix.cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Build packages
-        shell: bash
-        env:
-          TOOL: ${{ matrix.cross && 'cross' || 'cargo' }}
-          TARGET: ${{ matrix.target }}
-          PACKAGES: ${{ matrix.packages }}
-        run: |
-          set -euo pipefail
-          for pkg in $PACKAGES; do
-            case "$pkg" in
-              server)
-                $TOOL build --release --locked --target "$TARGET" --no-default-features --bin ximed-server
-                ;;
-              desktop)
-                $TOOL build --release --locked --target "$TARGET" --bin ximed-desktop
-                ;;
-            esac
-          done
+      - name: Build server
+        if: contains(matrix.packages, 'server')
+        uses: houseabsolute/actions-rust-cross@v1
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          args: --release --locked --no-default-features --bin ximed-server
+
+      - name: Build desktop
+        if: contains(matrix.packages, 'desktop')
+        uses: houseabsolute/actions-rust-cross@v1
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          args: --release --locked --bin ximed-desktop
 
       - name: Install cargo-packager
         if: contains(matrix.packages, 'desktop')
