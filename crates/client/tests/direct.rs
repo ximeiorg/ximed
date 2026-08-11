@@ -64,29 +64,31 @@ fn handle(mut stream: TcpStream, state: &Arc<Mutex<Vec<u8>>>) {
     let request_line = lines.next().unwrap_or("");
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("");
+    // 一律 `Connection: close`：本 mock 每个连接只服务一个请求（读完请求头即响应），
+    // 若允许 keep-alive，Windows 下带着未读 body 关闭 socket 会发 RST，
+    // 污染 reqwest 连接池，导致同主机后续请求报错（Linux 发 FIN 不受影响）。
+    let resp =
+        |code: &str| format!("HTTP/1.1 {code}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
     if method == "PUT" {
         // 从 body 段提取内容（简化：以空行后的内容为准）
         let body_start = req.find("\r\n\r\n").map(|i| i + 4).unwrap_or(buf.len());
         let body = buf[body_start..].to_vec();
         *state.lock().unwrap() = body;
-        let resp = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
-        let _ = stream.write_all(resp.as_bytes());
+        let _ = stream.write_all(resp("200 OK").as_bytes());
     } else if method == "GET" {
         let stored = state.lock().unwrap().clone();
         if stored.is_empty() {
-            let resp = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
-            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.write_all(resp("404 Not Found").as_bytes());
         } else {
             let len = stored.len();
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len}\r\n\r\n"
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {len}\r\n\r\n"
             );
-            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.write_all(header.as_bytes());
             let _ = stream.write_all(&stored);
         }
     } else {
-        let resp = "HTTP/1.1 501 Not Implemented\r\nContent-Length: 0\r\n\r\n";
-        let _ = stream.write_all(resp.as_bytes());
+        let _ = stream.write_all(resp("501 Not Implemented").as_bytes());
     }
 }
 
