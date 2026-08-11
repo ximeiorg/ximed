@@ -14,6 +14,14 @@ use tray_icon::{Icon, TrayIconBuilder};
 
 use crate::ui::UiMsg;
 
+/// Linux：muda/tray-icon 的 gtk 后端要求先初始化 GTK 才能创建菜单。
+/// 无显示环境（headless）下 `gtk::init` 失败，调用方据此跳过托盘而非 panic。
+#[cfg(target_os = "linux")]
+fn init_gtk() -> Result<(), Box<dyn std::error::Error>> {
+    gtk::init().map_err(|e| Box::<dyn std::error::Error>::from(format!("gtk init: {e}")))?;
+    Ok(())
+}
+
 /// 构建托盘图标与菜单，并在独立线程轮询事件。
 ///
 /// 菜单「显示窗口 / 隐藏窗口 / 退出」经 UI 事件通道发送给 iced：
@@ -26,6 +34,8 @@ use crate::ui::UiMsg;
 /// 注意：`TrayIcon` 被 drop 时系统会移除托盘图标，因此这里用 `Box::leak`
 /// 使其存活整个进程（托盘生命周期 = 进程生命周期），不能返回给调用方持有。
 pub fn setup(tx: crate::ui::UiSender) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "linux")]
+    init_gtk()?;
     let menu = Menu::new();
     let status_item = MenuItem::new("状态", true, None);
     let show_item = MenuItem::new("显示窗口", true, None);

@@ -62,11 +62,8 @@ pub fn run_client() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     };
     server::init_tracing("info");
-    // client-only 形态无设置面板：默认开启同步（产品默认主开关关，但 CLI 形态显式启动即代表启用）
-    let sync = SyncSettings {
-        switch_on: true,
-        ..SyncSettings::default()
-    };
+    // client-only 形态无设置面板：同步默认开启（与 SyncSettings 默认一致）
+    let sync = SyncSettings::default();
 
     #[cfg(feature = "tray")]
     {

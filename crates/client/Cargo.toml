@@ -18,7 +18,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 config = "0.15"
 base64 = "0.22"
 thiserror = "2"
-arboard = "3"
+# Wayland 会话下经 wlr-data-control 直连真实剪贴板；否则回退 X11/XWayland 通道，
+# 在无剪贴板桥接（如 KDE 未运行 klipper）时读不到 Wayland 原生应用的复制内容
+arboard = { version = "3", features = ["wayland-data-control"] }
 tracing = "0.1"
 # S3 直连适配器：AWS SigV4 签名（轻量，无 openssl）
 sha2 = "0.10"

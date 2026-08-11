@@ -25,6 +25,23 @@ use domain::profile::Profile;
 use crate::settings::{AppSettings, SyncMode};
 use crate::ui::{ApplySettingsPayload, UiCmd, UiMsg, UiSender, run_ui, ui_channel, ui_cmd_channel};
 
+/// 本机局域网 IPv4：经默认路由探测（UDP connect 不发包），零新依赖。
+/// 返回的是局域网其他设备可直接连接的地址；无可用路由时返回 None。
+fn lan_ip() -> Option<String> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    socket.local_addr().ok().map(|a| a.ip().to_string())
+}
+
+/// 用局域网 IP 替换监听地址中的通配符主机部分（端口不变）。
+/// 如 `0.0.0.0:4455` → `192.168.1.5:4455`；无法解析端口时原样返回。
+fn lan_endpoint(addr: &str, lan: &str) -> String {
+    match addr.rsplit_once(':') {
+        Some((_, port)) => format!("{lan}:{port}"),
+        None => lan.to_string(),
+    }
+}
+
 /// 启动 desktop 形态：阻塞直到进程结束。
 pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut settings = server::config::Settings::new()?;
@@ -245,7 +262,10 @@ async fn desktop_control_loop(
                     });
                     shutdown_tx = Some(shutdown_tx_);
                     server_task = Some(task);
-                    let _ = tx.send(UiMsg::ServerListening { addr: addr.clone() });
+                    let _ = tx.send(UiMsg::ServerListening {
+                        addr: addr.clone(),
+                        lan: lan_ip().map(|lan| lan_endpoint(&addr, &lan)),
+                    });
                 }
                 UiCmd::ServerStop => {
                     if let Some(shutdown) = shutdown_tx.take() {
@@ -272,7 +292,10 @@ async fn desktop_control_loop(
                     });
                     shutdown_tx = Some(shutdown_tx_);
                     server_task = Some(task);
-                    let _ = tx.send(UiMsg::ServerListening { addr: addr.clone() });
+                    let _ = tx.send(UiMsg::ServerListening {
+                        addr: addr.clone(),
+                        lan: lan_ip().map(|lan| lan_endpoint(&addr, &lan)),
+                    });
                 }
                 UiCmd::OpenConfigDir => {
                     open_dir();
@@ -529,5 +552,17 @@ mod tests {
             local_server_url(&settings_with_addr("localhost:8443")),
             "http://localhost:8443"
         );
+    }
+
+    #[test]
+    fn lan_endpoint_replaces_wildcard_host_keeps_port() {
+        assert_eq!(
+            lan_endpoint("0.0.0.0:4455", "192.168.1.5"),
+            "192.168.1.5:4455"
+        );
+        // IPv6 监听地址：[::]:4455 → 局域网 IPv4 + 端口
+        assert_eq!(lan_endpoint("[::]:4455", "192.168.1.5"), "192.168.1.5:4455");
+        // 无端口（异常输入）时原样返回局域网 IP
+        assert_eq!(lan_endpoint("bad-addr", "192.168.1.5"), "192.168.1.5");
     }
 }

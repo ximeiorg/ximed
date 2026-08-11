@@ -26,7 +26,7 @@ path = "src/bin/ximed-client.rs"
 [features]
 default = ["tray"]
 # 托盘/窗口 UI（桌面形态）；server-only 构建可关掉以减小体积
-tray = ["dep:tray-icon", "dep:muda", "dep:iced", "macos-dock-icon"]
+tray = ["dep:tray-icon", "dep:muda", "dep:iced", "dep:gtk", "macos-dock-icon"]
 # macOS 运行时设置 Dock 图标（cargo run 裸跑时 .icns 不生效，需运行时 setApplicationIconImage:）
 macos-dock-icon = ["dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]
 
@@ -75,6 +75,9 @@ iced = { version = "0.14", optional = true, default-features = false, features =
 # 托盘（feature tray）；Linux 需要 gtk 平台实现（muda/tray-icon 默认 feature 已关闭，需显式启用）
 tray-icon = { version = "0.24", optional = true, default-features = false, features = ["gtk"] }
 muda = { version = "0.19", optional = true, default-features = false, features = ["gtk"] }
+# Linux 托盘创建前需先初始化 GTK（muda/tray-icon 的 gtk 后端要求，iced 本身不初始化）
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { version = "0.18", optional = true }
 # macOS 运行时设置 Dock 图标（cargo run 裸跑时 .icns 不生效，需运行时 setApplicationIconImage:）
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", optional = true }

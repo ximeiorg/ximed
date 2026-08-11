@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 /// 配置框架，实际图片/文件同步能力作为后续功能点实现。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncSettings {
-    /// 同步主开关（默认关：关时引擎空转，不推不拉）。
-    #[serde(default)]
+    /// 同步主开关（默认开：本地剪贴板变化即推送到服务器，服务器变化即写回本地）。
+    #[serde(default = "default_true")]
     pub switch_on: bool,
     /// 推送：本地剪贴板变化 → 上传到服务器（默认开）。
     #[serde(default = "default_true")]
@@ -40,7 +40,7 @@ pub struct SyncSettings {
 impl Default for SyncSettings {
     fn default() -> Self {
         Self {
-            switch_on: false,
+            switch_on: true,
             push_switch_on: true,
             pull_switch_on: true,
             upload_text: true,
@@ -80,7 +80,7 @@ mod tests {
     #[test]
     fn sync_settings_defaults() {
         let s = SyncSettings::default();
-        assert!(!s.switch_on, "master switch must default off");
+        assert!(s.switch_on, "master switch must default on");
         assert!(s.push_switch_on);
         assert!(s.pull_switch_on);
         assert!(s.upload_text);

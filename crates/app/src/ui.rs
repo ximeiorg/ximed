@@ -45,7 +45,11 @@ pub enum UiMsg {
     /// 同步引擎已停止。
     EngineStopped { source: String },
     /// 服务器已监听。
-    ServerListening { addr: String },
+    ServerListening {
+        addr: String,
+        /// 局域网可直连地址（如 `192.168.1.5:4455`），无可用路由时为 None。
+        lan: Option<String>,
+    },
     /// 服务器已停止。
     ServerStopped { addr: String },
     /// 剪贴板历史刷新。
@@ -340,6 +344,15 @@ pub fn run_ui(
         .title("ximed")
         .window(iced::window::Settings {
             icon: Some(icon),
+            // Linux 桌面环境（GNOME 等）不读窗口图标，而是按 app_id 匹配
+            // ~/.local/share/applications|/usr/share/applications 下的 .desktop 文件
+            // 取图标；app_id 必须等于 .desktop 文件名（cargo-packager 打包产物即
+            // ximed-desktop.desktop），否则任务栏显示系统默认图标。
+            #[cfg(target_os = "linux")]
+            platform_specific: iced::window::settings::PlatformSpecific {
+                application_id: "ximed-desktop".into(),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .exit_on_close_request(false)
@@ -382,8 +395,11 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
         Message::Backend(UiMsg::EngineStopped { source }) => {
             state.engine_status = format!("engine stopped (device {source})");
         }
-        Message::Backend(UiMsg::ServerListening { addr }) => {
-            state.server_status = format!("listening on {addr}");
+        Message::Backend(UiMsg::ServerListening { addr, lan }) => {
+            state.server_status = match lan {
+                Some(lan) => format!("listening on {addr} · 局域网 {lan}"),
+                None => format!("listening on {addr}"),
+            };
             state.server_running = true;
         }
         Message::Backend(UiMsg::ServerStopped { addr }) => {

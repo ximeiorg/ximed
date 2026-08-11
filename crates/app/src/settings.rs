@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn missing_sync_block_falls_back_to_defaults() {
-        // 旧版配置文件没有 sync 节：加载后应回退默认（主开关关）
+        // 旧版配置文件没有 sync 节：加载后应回退默认（主开关开）
         let dir = tempdir().unwrap();
         std::fs::write(
             dir.path().join("ximed-client.toml"),
@@ -178,7 +178,7 @@ mod tests {
         let s = AppSettings::load(dir.path().to_str().unwrap());
         assert_eq!(s.mode, SyncMode::Local);
         assert_eq!(s.sync, SyncSettings::default());
-        assert!(!s.sync.switch_on);
+        assert!(s.sync.switch_on);
     }
 
     #[test]
