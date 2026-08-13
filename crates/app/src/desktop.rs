@@ -70,8 +70,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ui_tx = tx.clone();
     let ui_cmd_tx = cmd_tx.clone();
     // desktop 模式：server 在本地，可启停；配置目录为当前工作目录。
-    // 直连适配器（webdav/s3）不依赖本地 server，禁用本地 server 控制区。
-    let local_server = app_settings.adapter == client::config::AdapterKind::Server;
+    // 直连适配器（webdav/s3）不依赖本地 server，但本地 server 仍可手动启停，
+    // 供其他设备经 server 通道访问；因此本地 server 控制区始终可用。
+    let local_server = true;
 
     // 后台线程：tokio runtime 承载 server（受控）+ client + 历史轮询（先于 UI 启动）
     std::thread::spawn(move || {

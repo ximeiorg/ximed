@@ -1,9 +1,10 @@
 # PROGRESS
 
-> 更新：2026-08-11 · 阶段：Linux 桌面修复（tray GTK 初始化 + 任务栏图标 + 状态显示局域网 IP + Wayland 剪贴板 + 同步主开关默认开）
+> 更新：2026-08-13 · 阶段：修复直连适配器下设置面板与本地 server 控制区消失
 
 ## 当前状态
 
+- **设置面板/服务器控制区修复**：`local_server` 不再被适配器类型劫持（此前 `adapter=webdav/s3` 时设置导航与「开启/重启/关闭」控制区整体消失，且无法切回 server 适配器）；desktop 形态本地 server 始终可启停
 - **Linux 托盘修复**：muda/tray-icon 的 gtk 后端要求先 `gtk::init()`（iced 不初始化 GTK）；headless 无显示环境优雅降级跳过托盘
 - **Linux 任务栏图标**：iced `application_id = "ximed-desktop"`（与 cargo-packager 生成的 `ximed-desktop.desktop` 匹配；GNOME 等按 app_id 匹配 .desktop 取图标，忽略窗口图标）
 - **状态面板局域网地址**：server 启动时 UDP 探测默认路由 IP，`listening on 0.0.0.0:4455 · 局域网 192.168.1.5:4455`
