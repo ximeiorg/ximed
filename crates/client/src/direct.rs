@@ -34,6 +34,7 @@ pub fn make_direct_transport(cfg: &ClientConfig) -> Result<Arc<dyn Transport>, T
             let password = cfg.webdav_password().ok_or(TransportError::AuthRejected)?;
             Ok(Arc::new(WebDavTransport::new(
                 &cfg.webdav_url,
+                &cfg.webdav_dir,
                 &cfg.webdav_username,
                 &password,
             )))

@@ -53,9 +53,12 @@ pub struct ClientConfig {
     /// 同步适配器：server（默认）/ webdav / s3。
     #[serde(default)]
     pub adapter: AdapterKind,
-    /// WebDAV 直连：服务基础地址（如 `https://dav.example.com/xime`）。
+    /// WebDAV 直连：服务基础地址（如 `https://dav.example.com`）。
     #[serde(default)]
     pub webdav_url: String,
+    /// WebDAV 直连：同步子目录（如 `xime`，可空；与 webdav_url 拼接）。
+    #[serde(default)]
+    pub webdav_dir: String,
     /// WebDAV 直连：用户名。
     #[serde(default)]
     pub webdav_username: String,
@@ -102,6 +105,7 @@ impl Default for ClientConfig {
             ws_enabled: default_true(),
             adapter: AdapterKind::default(),
             webdav_url: String::new(),
+            webdav_dir: String::new(),
             webdav_username: String::new(),
             webdav_password_env: default_webdav_password_env(),
             webdav_password: None,

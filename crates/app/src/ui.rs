@@ -92,6 +92,7 @@ pub struct ApplySettingsPayload {
     pub remote_username: String,
     pub remote_password: String,
     pub webdav_url: String,
+    pub webdav_dir: String,
     pub webdav_username: String,
     pub webdav_password: String,
     pub s3_endpoint: String,
@@ -139,6 +140,8 @@ pub enum Message {
     SettingsPassword(String),
     /// WebDAV 直连地址输入。
     SettingsWebDavUrl(String),
+    /// WebDAV 直连目录输入。
+    SettingsWebDavDir(String),
     /// WebDAV 直连用户名输入。
     SettingsWebDavUsername(String),
     /// WebDAV 直连密码输入。
@@ -208,6 +211,8 @@ pub struct UiState {
     pub remote_password: String,
     /// WebDAV 直连地址（设置面板编辑）。
     pub webdav_url: String,
+    /// WebDAV 直连目录（设置面板编辑）。
+    pub webdav_dir: String,
     /// WebDAV 直连用户名（设置面板编辑）。
     pub webdav_username: String,
     /// WebDAV 直连密码（设置面板编辑）。
@@ -280,6 +285,7 @@ impl UiState {
             remote_username: app_settings.remote_username.clone(),
             remote_password: app_settings.remote_password.clone().unwrap_or_default(),
             webdav_url: app_settings.webdav_url.clone(),
+            webdav_dir: app_settings.webdav_dir.clone(),
             webdav_username: app_settings.webdav_username.clone(),
             webdav_password: app_settings.webdav_password.clone().unwrap_or_default(),
             s3_endpoint: app_settings.s3_endpoint.clone(),
@@ -488,6 +494,10 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
             state.webdav_url = url;
             state.settings_status = String::new();
         }
+        Message::SettingsWebDavDir(dir) => {
+            state.webdav_dir = dir;
+            state.settings_status = String::new();
+        }
         Message::SettingsWebDavUsername(username) => {
             state.webdav_username = username;
             state.settings_status = String::new();
@@ -559,6 +569,7 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
                 remote_username: state.remote_username.clone(),
                 remote_password: state.remote_password.clone(),
                 webdav_url: state.webdav_url.clone(),
+                webdav_dir: state.webdav_dir.clone(),
                 webdav_username: state.webdav_username.clone(),
                 webdav_password: state.webdav_password.clone(),
                 s3_endpoint: state.s3_endpoint.clone(),
@@ -1594,8 +1605,14 @@ fn conn_card_body(state: &UiState) -> Element<'_, Message> {
                 column![
                     Space::new().height(6),
                     field_label("WebDAV 地址"),
-                    TextInput::new("https://dav.example.com/xime", &state.webdav_url)
+                    TextInput::new("https://dav.example.com", &state.webdav_url)
                         .on_input(Message::SettingsWebDavUrl)
+                        .padding(10)
+                        .style(input_style),
+                    Space::new().height(2),
+                    field_label("目录"),
+                    TextInput::new("xime", &state.webdav_dir)
+                        .on_input(Message::SettingsWebDavDir)
                         .padding(10)
                         .style(input_style),
                     Space::new().height(2),
@@ -1612,7 +1629,7 @@ fn conn_card_body(state: &UiState) -> Element<'_, Message> {
                         .padding(10)
                         .style(input_style),
                     Space::new().height(4),
-                    text("直连 WebDAV：剪贴板同步到 {地址}/clipboard/current.json，无需 ximed server。")
+                    text("直连 WebDAV：剪贴板同步到 {地址}/{目录}/clipboard/current.json，无需 ximed server。")
                         .size(11)
                         .color(TEXT_FAINT),
                 ]

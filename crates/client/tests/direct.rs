@@ -99,7 +99,7 @@ fn sample_profile() -> Profile {
 #[tokio::test]
 async fn webdav_direct_push_pull_roundtrip() {
     let srv = MockServer::spawn();
-    let t = WebDavTransport::new(&srv.url("/dav"), "user", "pass");
+    let t = WebDavTransport::new(&srv.url("/dav"), "sync", "user", "pass");
     let profile = sample_profile();
 
     // push → 远端存储该 profile
@@ -120,7 +120,7 @@ async fn webdav_direct_push_pull_roundtrip() {
 #[tokio::test]
 async fn webdav_direct_pull_empty_returns_none() {
     let srv = MockServer::spawn();
-    let t = WebDavTransport::new(&srv.url("/dav"), "user", "pass");
+    let t = WebDavTransport::new(&srv.url("/dav"), "sync", "user", "pass");
     assert_eq!(
         t.pull().await.unwrap(),
         None,
@@ -151,7 +151,7 @@ async fn s3_direct_push_pull_roundtrip() {
 async fn webdav_direct_image_profile_roundtrip() {
     // 图片 profile（内嵌 base64 data）经直连通道完整往返
     let srv = MockServer::spawn();
-    let t = WebDavTransport::new(&srv.url("/dav"), "user", "pass");
+    let t = WebDavTransport::new(&srv.url("/dav"), "sync", "user", "pass");
     let bytes: Vec<u8> = (0..64).map(|i| (i % 251) as u8).collect();
     let profile = Profile::from_image(bytes, 8, 8, Some("dev-a".to_string()));
 

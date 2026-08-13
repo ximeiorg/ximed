@@ -1,5 +1,5 @@
 //! WebDAV 直连适配器：把引擎的 push/pull/next_event 映射为远端
-//! `{base}/{clipboard/current.json}` 的 PUT / GET / 轮询（Basic Auth）。
+//! `{base}/{dir}/{clipboard/current.json}` 的 PUT / GET / 轮询（Basic Auth）。
 
 use std::time::Duration;
 
@@ -11,15 +11,21 @@ use crate::transport::{Transport, TransportError};
 
 /// WebDAV 直连传输通道。
 pub struct WebDavTransport {
-    /// 对象完整 URL（`{base}/{clipboard/current.json}`）。
+    /// 对象完整 URL（`{base}/{dir}/{clipboard/current.json}`）。
     url: String,
     auth: Option<String>,
     client: reqwest::Client,
 }
 
 impl WebDavTransport {
-    pub fn new(base_url: &str, username: &str, password: &str) -> Self {
-        let base = base_url.trim_end_matches('/');
+    /// `base_url` 为服务器地址（可含基础路径），`dir` 为同步子目录（可为空）。
+    pub fn new(base_url: &str, dir: &str, username: &str, password: &str) -> Self {
+        let mut base = base_url.trim_end_matches('/').to_string();
+        let dir = dir.trim_matches('/');
+        if !dir.is_empty() {
+            base.push('/');
+            base.push_str(dir);
+        }
         let url = format!("{base}/{CLIPBOARD_KEY}");
         let auth = if username.is_empty() {
             None
@@ -93,8 +99,23 @@ mod tests {
 
     #[test]
     fn url_points_at_clipboard_key() {
-        let t = WebDavTransport::new("https://dav.example.com/xime", "u", "p");
+        let t = WebDavTransport::new("https://dav.example.com/xime", "", "u", "p");
         assert_eq!(t.url, "https://dav.example.com/xime/clipboard/current.json");
         assert!(t.auth.is_some());
+    }
+
+    #[test]
+    fn dir_is_joined_between_base_and_key() {
+        let t = WebDavTransport::new("https://dav.example.com", "/sync/a/", "u", "p");
+        assert_eq!(
+            t.url,
+            "https://dav.example.com/sync/a/clipboard/current.json"
+        );
+    }
+
+    #[test]
+    fn empty_dir_falls_back_to_base() {
+        let t = WebDavTransport::new("https://dav.example.com/xime", "", "u", "p");
+        assert_eq!(t.url, "https://dav.example.com/xime/clipboard/current.json");
     }
 }

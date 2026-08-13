@@ -36,9 +36,12 @@ pub struct AppSettings {
     /// 远程服务器密码（敏感项明文落盘；desktop 单机场景可接受）。
     #[serde(default)]
     pub remote_password: Option<String>,
-    /// WebDAV 直连：服务基础地址（如 `https://dav.example.com/xime`）。
+    /// WebDAV 直连：服务基础地址（如 `https://dav.example.com`）。
     #[serde(default)]
     pub webdav_url: String,
+    /// WebDAV 直连：同步子目录（如 `xime`，可空；与 webdav_url 拼接）。
+    #[serde(default)]
+    pub webdav_dir: String,
     /// WebDAV 直连：用户名。
     #[serde(default)]
     pub webdav_username: String,
@@ -78,6 +81,7 @@ impl Default for AppSettings {
             remote_username: String::new(),
             remote_password: None,
             webdav_url: String::new(),
+            webdav_dir: String::new(),
             webdav_username: String::new(),
             webdav_password: None,
             s3_endpoint: String::new(),
@@ -133,7 +137,8 @@ mod tests {
             remote_url: "https://example.com:8443".to_string(),
             remote_username: "alice".to_string(),
             remote_password: Some("secret".to_string()),
-            webdav_url: "https://dav.example.com/xime".to_string(),
+            webdav_url: "https://dav.example.com".to_string(),
+            webdav_dir: "xime".to_string(),
             webdav_username: "dav-user".to_string(),
             webdav_password: Some("dav-secret".to_string()),
             s3_endpoint: "https://s3.example.com".to_string(),

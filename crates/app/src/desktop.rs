@@ -165,6 +165,7 @@ fn apply_client_adapter(
         AdapterKind::WebDav => {
             client_cfg.adapter = AdapterKind::WebDav;
             client_cfg.webdav_url = app_settings.webdav_url.clone();
+            client_cfg.webdav_dir = app_settings.webdav_dir.clone();
             client_cfg.webdav_username = app_settings.webdav_username.clone();
             // 凭据优先环境变量；设置面板明文直接注入字段（getter 兜底）
             client_cfg.webdav_password = app_settings.webdav_password.clone();
@@ -308,6 +309,7 @@ async fn desktop_control_loop(
                         remote_username,
                         remote_password,
                         webdav_url,
+                        webdav_dir,
                         webdav_username,
                         webdav_password,
                         s3_endpoint,
@@ -328,6 +330,7 @@ async fn desktop_control_loop(
                             Some(remote_password.clone())
                         },
                         webdav_url: webdav_url.clone(),
+                        webdav_dir: webdav_dir.clone(),
                         webdav_username: webdav_username.clone(),
                         webdav_password: if webdav_password.is_empty() {
                             None
