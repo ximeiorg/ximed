@@ -10,8 +10,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use domain::hash::{sha256_hex, text_hash};
-use domain::profile::{Profile, ProfileType};
+use xime_sync_domain::hash::{sha256_hex, text_hash};
+use xime_sync_domain::profile::{Profile, ProfileType};
 
 use crate::clipboard::{ClipboardAdapter, ImageData};
 use crate::config::ClientConfig;

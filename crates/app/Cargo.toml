@@ -55,9 +55,9 @@ installer-mode = "currentUser"
 appdata-paths = ["$LOCALAPPDATA/$IDENTIFIER"]
 
 [dependencies]
-server = { path = "../server" }
-client = { path = "../client" }
-domain = { path = "../domain" }
+xime-sync-server.workspace = true
+xime-sync-domain.workspace = true
+client.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"

@@ -35,14 +35,14 @@ use client::sync::SyncEngine;
 
 /// Form 1：仅服务器。行为与原 `ximed server` 子命令一致。
 pub fn run_server() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let settings = server::config::Settings::new()?;
-    if let Err(msg) = server::check_auth_password(&settings) {
+    let settings = xime_sync_server::config::Settings::new()?;
+    if let Err(msg) = xime_sync_server::check_auth_password(&settings) {
         eprintln!("error: {msg}");
         std::process::exit(1);
     }
-    server::init_tracing(&settings.server().log_level);
+    xime_sync_server::init_tracing(&settings.server().log_level);
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(server::run(settings))
+    rt.block_on(xime_sync_server::run(settings))
 }
 
 /// Form 3：仅客户端。连远程服务器同步本地剪贴板。
@@ -61,7 +61,7 @@ pub fn run_client() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             std::process::exit(1);
         }
     };
-    server::init_tracing("info");
+    xime_sync_server::init_tracing("info");
     // client-only 形态无设置面板：同步默认开启（与 SyncSettings 默认一致）
     let sync = SyncSettings::default();
 
@@ -97,9 +97,11 @@ pub fn run_client() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     .expect("local history must open in temp dir as fallback")
                 });
                 let history_for_engine = local_history.clone();
-                engine.set_history_handler(Arc::new(move |profile: &domain::profile::Profile| {
-                    history_for_engine.record(profile);
-                }));
+                engine.set_history_handler(Arc::new(
+                    move |profile: &xime_sync_domain::profile::Profile| {
+                        history_for_engine.record(profile);
+                    },
+                ));
                 let tx_engine = tx.clone();
                 let source = cfg.source.clone();
                 let _ = tx_engine.send(ui::UiMsg::EngineStarted {

@@ -7,9 +7,9 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use domain::profile::Profile;
-use domain::protocol::{ClientMessage, ServerMessage};
 use futures_util::{SinkExt, StreamExt};
+use xime_sync_domain::profile::Profile;
+use xime_sync_domain::protocol::{ClientMessage, ServerMessage};
 
 use crate::config::ClientConfig;
 

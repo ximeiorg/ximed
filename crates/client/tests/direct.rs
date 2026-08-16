@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use client::direct::{S3Transport, WebDavTransport};
 use client::transport::Transport;
-use domain::profile::Profile;
+use xime_sync_domain::profile::Profile;
 
 /// 极简 HTTP 服务：监听随机端口，按请求路径/方法返回预设行为。
 /// - PUT `/*` → 200，记录 body 到共享状态（按 URL 键存储）

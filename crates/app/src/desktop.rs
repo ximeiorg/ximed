@@ -7,7 +7,7 @@
 //!   - 后台 → UI：mpsc channel（[`UiMsg`]），iced `Subscription` 注入
 //!   - UI → 后台：mpsc channel（[`UiCmd`]），UI 按钮触发（开启/重启/关闭 server、打开配置目录）
 //!
-//! server 不随应用自动启动：用户点击「开启」后由后台线程以 [`server::run_managed`]
+//! server 不随应用自动启动：用户点击「开启」后由后台线程以 [`xime_sync_server::run_managed`]
 //! 启动（优雅停止由 UI 的「关闭/重启」命令触发）。
 //!
 //! 零配置：server 未配置密码时自动生成随机密码并落盘
@@ -20,7 +20,7 @@ use client::clipboard::SystemClipboard;
 use client::config::ClientConfig;
 use client::history_store::LocalHistory;
 use client::sync::{SyncEngine, SyncStatus};
-use domain::profile::Profile;
+use xime_sync_domain::profile::Profile;
 
 use crate::settings::{AppSettings, SyncMode};
 use crate::ui::{ApplySettingsPayload, UiCmd, UiMsg, UiSender, run_ui, ui_channel, ui_cmd_channel};
@@ -44,7 +44,7 @@ fn lan_endpoint(addr: &str, lan: &str) -> String {
 
 /// 启动 desktop 形态：阻塞直到进程结束。
 pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut settings = server::config::Settings::new()?;
+    let mut settings = xime_sync_server::config::Settings::new()?;
     let mut client_cfg = ClientConfig::load()?;
     let config_dir = config_dir(&settings);
     let app_settings = AppSettings::load(&config_dir);
@@ -59,7 +59,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 远程模式或直连模式：client_cfg.password 保持各自来源。
 
     // 日志级别取 server 配置
-    server::init_tracing(&settings.server().log_level);
+    xime_sync_server::init_tracing(&settings.server().log_level);
 
     // UI 后台事件通道：后台线程发 → iced Subscription 注入；托盘在 UI 事件循环启动后创建
     let (tx, rx) = ui_channel();
@@ -102,7 +102,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 
 /// 配置文件所在目录：优先当前工作目录（ximed.toml 所在），不存在则回退 data_dir。
-fn config_dir(settings: &server::config::Settings) -> String {
+fn config_dir(settings: &xime_sync_server::config::Settings) -> String {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     if cwd.join("ximed.toml").exists() {
         cwd.to_string_lossy().into_owned()
@@ -116,7 +116,7 @@ fn config_dir(settings: &server::config::Settings) -> String {
 /// server 绑定通配地址（0.0.0.0 / ::）时 client 走回环 127.0.0.1；
 /// 绑定具体 IP/主机名则原样复用。这样只改 `[server] addr`（含端口），
 /// client 无需单独配置即可找到本地 server。
-fn local_server_url(settings: &server::config::Settings) -> String {
+fn local_server_url(settings: &xime_sync_server::config::Settings) -> String {
     let addr = &settings.server().addr;
     let (host, port) = addr.rsplit_once(':').unwrap_or(("127.0.0.1", "8443"));
     let host = match host {
@@ -133,7 +133,7 @@ fn local_server_url(settings: &server::config::Settings) -> String {
 fn apply_client_adapter(
     app_settings: &AppSettings,
     client_cfg: &mut ClientConfig,
-    settings: &server::config::Settings,
+    settings: &xime_sync_server::config::Settings,
     server_pw: &str,
 ) {
     use client::config::AdapterKind;
@@ -184,12 +184,12 @@ fn apply_client_adapter(
 
 /// 后台服务控制循环：响应 UI 命令，统一管理本地 server、client 同步引擎与历史轮询。
 ///
-/// - server 以 [`server::run_managed`] 在独立任务中运行，通过 watch channel 优雅停止。
+/// - server 以 [`xime_sync_server::run_managed`] 在独立任务中运行，通过 watch channel 优雅停止。
 /// - client 引擎与历史轮询按当前 [`ClientConfig`] 启动；设置变更（[`UiCmd::ApplySettings`]）
 ///   时持久化并重建，切换远程模式时同时停止本地 server。
 async fn desktop_control_loop(
     cmd_rx: std::sync::mpsc::Receiver<UiCmd>,
-    settings: server::config::Settings,
+    settings: xime_sync_server::config::Settings,
     server_pw: String,
     mut client_cfg: ClientConfig,
     tx: UiSender,
@@ -258,7 +258,7 @@ async fn desktop_control_loop(
                     let (shutdown_tx_, shutdown_rx) = tokio::sync::watch::channel(false);
                     let settings = settings.clone();
                     let task = tokio::spawn(async move {
-                        if let Err(e) = server::run_managed(settings, shutdown_rx).await {
+                        if let Err(e) = xime_sync_server::run_managed(settings, shutdown_rx).await {
                             tracing::error!("server exited: {e}");
                         }
                     });
@@ -288,7 +288,7 @@ async fn desktop_control_loop(
                     let (shutdown_tx_, shutdown_rx) = tokio::sync::watch::channel(false);
                     let settings = settings.clone();
                     let task = tokio::spawn(async move {
-                        if let Err(e) = server::run_managed(settings, shutdown_rx).await {
+                        if let Err(e) = xime_sync_server::run_managed(settings, shutdown_rx).await {
                             tracing::error!("server exited: {e}");
                         }
                     });
@@ -477,7 +477,7 @@ fn stop_client_services(
 
 /// 解析 server 认证密码：已配置则直接返回；否则生成随机密码并落盘
 /// `{data_dir}/auth_password`（0600），注入 settings.auth.password。
-fn server_password(settings: &mut server::config::Settings) -> String {
+fn server_password(settings: &mut xime_sync_server::config::Settings) -> String {
     if let Some(pw) = settings.auth().password() {
         return pw;
     }
@@ -522,7 +522,7 @@ fn random_password() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use server::config::Settings;
+    use xime_sync_server::config::Settings;
 
     fn settings_with_addr(addr: &str) -> Settings {
         let mut s = Settings::default();

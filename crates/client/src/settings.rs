@@ -54,8 +54,8 @@ impl Default for SyncSettings {
 
 impl SyncSettings {
     /// 该类型是否允许上传（类型白名单：text/image/file，group 多文件不开放）。
-    pub fn type_allowed(&self, ty: domain::profile::ProfileType) -> bool {
-        use domain::profile::ProfileType;
+    pub fn type_allowed(&self, ty: xime_sync_domain::profile::ProfileType) -> bool {
+        use xime_sync_domain::profile::ProfileType;
         match ty {
             ProfileType::Text => self.upload_text,
             ProfileType::Image => self.upload_image,
@@ -75,7 +75,7 @@ fn default_max_file_byte() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use domain::profile::ProfileType;
+    use xime_sync_domain::profile::ProfileType;
 
     #[test]
     fn sync_settings_defaults() {

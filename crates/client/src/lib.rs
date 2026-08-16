@@ -8,6 +8,8 @@ pub mod config;
 pub mod direct;
 pub mod history;
 pub mod history_store;
+#[cfg(feature = "plugin")]
+pub mod plugin;
 pub mod settings;
 pub mod sync;
 pub mod transport;

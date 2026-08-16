@@ -6,8 +6,9 @@ license.workspace = true
 
 [dependencies]
 async-trait = "0.1"
-domain = { path = "../domain" }
-store = { path = "../store", features = ["history"] }
+xime-sync-domain.workspace = true
+xime-sync-store = { workspace = true, features = ["history"] }
+xime-plugin = { workspace = true, optional = true }
 tokio = { version = "1", features = ["time", "macros", "rt", "sync"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
@@ -30,3 +31,8 @@ hex = "0.4"
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["rt", "macros", "time"] }
+
+[features]
+default = []
+# Lua clipboard_sync 插件传输（引入 mlua；仅插件同步需要时开启，server 形态保持最小体积）
+plugin = ["dep:xime-plugin"]

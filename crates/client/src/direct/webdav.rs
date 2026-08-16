@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use domain::profile::Profile;
+use xime_sync_domain::profile::Profile;
 
 use super::CLIPBOARD_KEY;
 use crate::transport::{Transport, TransportError};

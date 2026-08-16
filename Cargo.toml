@@ -7,6 +7,17 @@ version = "0.1.1"
 edition = "2024"
 license = "MIT"
 
+[workspace.dependencies]
+# libximecore — shared crates (git dep, patched to local for development, 同 XimeChe 模式)
+# 本地开发用 .cargo/config.toml（gitignored）patch 回 ../libximecore 路径
+xime-sync-domain = { git = "https://github.com/ximeiorg/libximecore.git", package = "xime-sync-domain" }
+xime-sync-store = { git = "https://github.com/ximeiorg/libximecore.git", package = "xime-sync-store" }
+xime-sync-service = { git = "https://github.com/ximeiorg/libximecore.git", package = "xime-sync-service" }
+xime-sync-server = { git = "https://github.com/ximeiorg/libximecore.git", package = "xime-sync-server" }
+xime-plugin = { git = "https://github.com/ximeiorg/libximecore.git", package = "xime-plugin" }
+client = { path = "crates/client" }
+app = { path = "crates/app" }
+
 # 低性能设备（树莓派）部署优化：体积/速度优先
 [profile.release]
 opt-level = "z"          # 最小体积

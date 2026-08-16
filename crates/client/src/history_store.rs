@@ -2,15 +2,15 @@
 //!
 //! server 适配器模式的历史由 server 的 SQLite `HistoryRepo` 记录、client 经
 //! HTTP API 拉取；直连适配器（webdav/s3）没有 server，本模块复用
-//! [`store::HistoryRepo`] 在 client 本地记录剪贴板历史，供历史面板展示。
+//! [`xime_sync_store::HistoryRepo`] 在 client 本地记录剪贴板历史，供历史面板展示。
 //!
 //! 记录时机：同步引擎每次把本地内容推送到远端、或把远端内容写入本地时，
 //! 由上层（app）调用 [`LocalHistory::record`] 记录一条。
 
 use std::sync::Arc;
 
-use domain::profile::{Profile, ProfileType};
-use store::HistoryRepo;
+use xime_sync_domain::profile::{Profile, ProfileType};
+use xime_sync_store::HistoryRepo;
 
 /// 客户端本地历史仓库（共享引用，跨线程使用）。
 #[derive(Clone)]
@@ -43,7 +43,7 @@ impl LocalHistory {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_micros() as u64)
             .unwrap_or(0);
-        let entry = store::history::HistoryEntry {
+        let entry = xime_sync_store::history::HistoryEntry {
             seq,
             hash: profile.hash.clone(),
             kind: kind.to_string(),

@@ -6,7 +6,7 @@
 use std::borrow::Cow;
 use std::sync::Mutex;
 
-use domain::hash::text_hash;
+use xime_sync_domain::hash::text_hash;
 
 /// 剪贴板图片数据（RGBA8 像素 + 宽高）。
 #[derive(Debug, Clone, PartialEq, Eq)]
