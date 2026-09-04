@@ -1,58 +1,47 @@
 # PROGRESS
 
-> 更新：2026-08-13 · 阶段：修复直连适配器下设置面板与本地 server 控制区消失
+> 更新：2026-09-04 · 阶段：同步插件框架（clipboard_sync 插件接入适配器体系 + 同步独立菜单）
 
 ## 当前状态
 
-- **设置面板/服务器控制区修复**：`local_server` 不再被适配器类型劫持（此前 `adapter=webdav/s3` 时设置导航与「开启/重启/关闭」控制区整体消失，且无法切回 server 适配器）；desktop 形态本地 server 始终可启停
-- **Linux 托盘修复**：muda/tray-icon 的 gtk 后端要求先 `gtk::init()`（iced 不初始化 GTK）；headless 无显示环境优雅降级跳过托盘
-- **Linux 任务栏图标**：iced `application_id = "ximed-desktop"`（与 cargo-packager 生成的 `ximed-desktop.desktop` 匹配；GNOME 等按 app_id 匹配 .desktop 取图标，忽略窗口图标）
-- **状态面板局域网地址**：server 启动时 UDP 探测默认路由 IP，`listening on 0.0.0.0:4455 · 局域网 192.168.1.5:4455`
-- **Wayland 剪贴板修复**：arboard 启用 `wayland-data-control`（wlr-data-control 直连，KDE Wayland 无 klipper 时 XWayland 读不到 Wayland 原生复制内容——已实测复现并修复）
-- **同步主开关默认开启**：`SyncSettings::default().switch_on = true`（新安装开箱即用）
-- 125+ 测试全绿（client 42 + app 14 + 其余）；fmt/clippy 干净
+- **同步插件框架（本次）**：复用 libximecore `xime-plugin`（.xipk 安装/Lua 沙箱/clipboard_sync 契约），ximed 侧补齐三块——configSchema 解释器（设置表单数据驱动）、SyncPluginManager（已装插件管理/配置读写/构建通道）、插件商店索引（index.ximei.me 拉取/sha256 校验下载）
+- **同步独立菜单（本次二轮调整）**：侧栏「同步」页 = 同步方式（插件单选激活 + 插件 configSchema 动态表单 + 测试连接 + 恢复默认）+ 同步开关卡片 + 插件商店；**原生 server/WebDAV/S3 表单从 UI 移除**（保留为 daemon/ximed.toml 配置能力），设置页随之取消——选中插件即激活，卸载激活插件自动回退本机 server
+- **ximed_sync 插件自动填充（本次三轮）**：desktop 后台把本机 server 连接信息（url/username/password，经 `UiMsg::LocalServerInfo` 下发）给 UI；选中 `com.kingzcheung.xime.plugin.ximed_sync` 时空缺的 serverUrl/username/password 字段自动填入本地配置（已保存值不覆盖），三条件单测覆盖（其他插件不填/无本地信息不填/已有值不覆盖）
+- **插件成为第四种同步适配器**：`AdapterKind::Plugin` + `ClientConfig{plugins_dir, plugin_id}`；默认仍为本机 server（零配置开箱即用），选插件并保存后切换
+- **上游修复（libximecore@1403bff）**：`PluginManifest.config_schema` 缺 `serde(rename = "configSchema")`，真实插件的 camelCase 键从未被反序列化过；已修复并补测试
+- 测试全绿（client 60 含插件 feature + app 14）；fmt/clippy 三种 feature 组合干净；`--no-default-features` 最小 server 构建不受影响
 
 ## 下一步
 
-1. 审查未提交变更后提交（GPG 签名）
+1. GUI 手工验证：桌面启动 ximed-desktop → 同步页刷新商店 → 安装 WebDAV 同步插件 → 选中 → 填配置 → 测试连接 → 保存应用 → 双端剪贴板同步；卸载激活插件验证回退本机 server
 2. 文件同步（single_file 白名单目前仅文本/图片生效）：需 macOS/Linux/Windows 剪贴板文件路径读写（NSPasteboard / x11 / CF_HDROP），工程量最大
 3. 真实多设备端到端验证（desktop 开启 server → 桌面复制文本/图片 → 另一设备同步）
 
 ## 已完成
 
-- [x] **同步设置框架**：`client::settings::SyncSettings` + 引擎遵循（主开关/推送/拉取/白名单/大小/通知）+ UI 卡片 + 引擎重建 + 下载通知
-- [x] **历史上限 100**：store 修剪 SQL（`insert_prunes_beyond_max_items`、`prune_keeps_upserted_seq`）
-- [x] **client 直连**：WebDAV（PUT/GET current.json + Basic Auth）、S3（手写 SigV4，仅 hmac/sha2/hex）、4 个 TCP mock 端到端测试；删除过时 `docs/design/clipboard-sync.md`
-- [x] **直连本地历史**：`history_store.rs`（record 写 source）、Push 成功/Write 剪贴板时记录、3s 轮询发 `UiMsg::History`、server 适配器不再 HTTP 拉历史作为 UI 来源
-- [x] **历史来源视觉区分**：`history_tag_remote` 强调色 tag；远程「远程 · 设备名」/本机「本机」；移除 desktop `HttpTransport` import
-- [x] **图片同步（本次）**：
-  - domain：Profile 增 `data`（base64 序列化，`skip_serializing_if none` 保持旧 JSON 兼容）/`width`/`height` + `from_image`（hash=SHA256(data)）
-  - client clipboard：`ImageData{width,height,bytes}` + `get_image/set_image`（arboard，worker 线程可用）
-  - client sync：图片优先轮询 `on_image_poll`、`SyncAction::WriteImage`、`apply_remote` 支持 Image、startup_pull 支持图片并**执行采纳 action**（修复：原只决策不执行，文本分支 WS 广播掩盖）
-  - server：`default.toml`/serde default `max_frame_size` 1MB→16MB（对齐 10MB 上限 + base64 膨胀）；`service::ClipboardService.validate_profile` 支持 Image（hash/size/data 校验）；历史 kind 增 "image"
-  - UI：历史卡片 image 类型显示「[图片]」占位；空态文案更新
-  - 直连集成测试增 webdav/s3 图片往返；client 引擎增 8 个图片测试；service 增 image 校验测试
-  - 端到端实测：截屏 → daemon client 推送（server `type:image, 1920x1080, source`）→ 另一 client 启动采纳写入剪贴板 ✓
-- [x] 图标修复：librsvg 渲染透明 PNG + 重新生成 icns/ico；侧栏真实图标（iced image + include_bytes）
-- [x] 三形态架构 + 发布打包 + CI（见下）
+- [x] **同步插件框架（本次）**：
+  - client `plugin/` 模块：mod（Lua↔Transport 桥接，配置路径显式传入，修正重装丢配置）/ schema（configSchema 宽松解析：text/secret/button、helpText/placeholder/action，对齐线上真实插件）/ registry（SyncPluginManager：list_sync/配置读写 host.config 同源/安装卸载/make_transport/testConnection）/ index（index.yaml 解析 + clipboard_sync 过滤 + .xipk 下载 sha256 校验）
+  - config 分派：`AdapterKind::Plugin`，`make_transport` feature 门控（未启用/构建失败回退 HTTP 轮询并 warn）
+  - app 接线：feature `plugin`（tray 依赖它）；desktop 后台命令（索引刷新/下载安装/卸载/测试连接 spawn_blocking）；ApplySettings 写 `config/<id>.yaml`；卸载激活插件时清除选择并重建引擎
+  - UI：插件面板页（已安装 + 商店）+ 设置插件适配器（动态表单/单选激活/测试连接状态）
+- [x] **同步设置框架**：`client::settings::SyncSettings` + 引擎遵循 + UI 卡片 + 引擎重建 + 下载通知
+- [x] **client 直连**：WebDAV、S3（手写 SigV4）、4 个 TCP mock 端到端测试
+- [x] **图片同步**：Profile 嵌 base64 data + 引擎/服务端/UI 全链
+- [x] Linux 桌面修复、三形态架构 + 发布打包 + CI（详见 git 历史）
 
 ## 待办（后续功能点）
 
-- [x] Linux 桌面修复（本次）：tray GTK 初始化 + application_id 图标 + 状态局域网 IP + Wayland 剪贴板 + 同步主开关默认开
+- [ ] GUI 手工端到端验证插件同步（见下一步 1）
 - [ ] 文件同步（跨平台剪贴板文件路径读写，工作量最大）
 - [ ] macOS .app 打包（LSUIElement + 图标）
 - [ ] S3 存储后端（按需，大依赖）
 
 ## 关键实现细节（本次会话）
 
-- **Linux 托盘 GTK 初始化**：muda/tray-icon 的 gtk 后端在 `Menu::new()` 时 panic「GTK has not been initialized」；Linux 下建托盘前 `gtk::init()`，headless（无显示）时 init 失败返回 Err，由 `ensure_tray` 记录 warning 跳过托盘
-- **Linux 任务栏图标机制**：GNOME/KDE 等桌面不读窗口图标（NET_WM_ICON/Wayland 无窗口图标概念），按 app_id（Wayland）/WM_CLASS（X11）匹配 `/usr/share/applications/<id>.desktop` 取 `Icon=`；cargo-packager 的 deb/appimage 自动生成 `{main_binary}.desktop`（Icon=main_binary 名、hicolor 图标）→ app_id 必须设为 `ximed-desktop`
-- **Wayland 剪贴板坑**：arboard 默认无 `wayland-data-control` feature，Wayland 会话回退 XWayland X11 通道；KDE 的 XWayland↔Wayland 剪贴板桥接由 klipper 承担，未运行 klipper 时读剪贴板恒为 `ContentNotAvailable`（引擎永远检测不到复制）。启用 `wlr-data-control` 直连真实剪贴板
-- **同步主开关默认关的坑**：desktop 形态 `SyncSettings::switch_on` 默认 false 时引擎空转（不推不拉、历史为空），用户以为坏了；改为默认开启
-- **局域网 IP 探测**：UDP connect（`bind 0.0.0.0:0` + `connect 8.8.8.8:80`）取默认路由 IP，零新依赖；`rsplit_once(':')` 兼容 IPv6 监听地址取端口
-- 图片载荷：Profile 内嵌 base64 `data`（`serde with` 自定义序列化，避免数字数组）；传输/server/webdav/s3/历史存储零改动，仅 server body limit 与校验放开
-- **server body limit 陷阱**：`MemorySource` 内嵌 `default.toml`（include_str!）优先级高于 serde default fn，改默认值必须改 `default.toml` 而非 `#[serde(default)]`；axum DefaultBodyLimit 拒绝超限 body（413）
-- **引擎 startup_pull bug**：决策（apply_remote）后未 `execute`，启动采纳从未写入剪贴板；文本场景被 WS next_event 广播掩盖，图片场景暴露；已修复并补回归测试
-- **macOS 剪贴板**：arboard `get_image/set_image` 在 tokio worker 线程可用（无主线程依赖）；`screencapture -x -c` 截图可被 arboard 读取（RGBA8）
-- 直连凭据：环境变量优先，设置面板明文字段兜底；避免 `unsafe set_var`（Rust 2024）
-- SigV4 手写：`host;x-amz-content-sha256;x-amz-date` 签署；`#[allow(clippy::too_many_arguments)]`
+- **configSchema 约定**（ximed 定义，libximecore 只存宽松 Value）：字段 `key/label/type/required/placeholder/helpText/action`；type ∈ text|secret|button（未知按 text）；required 缺省视为必填（线上必填字段惯常省略该键）；值统一按字符串读写（host.config 为 String→String YAML）
+- **插件配置存储**：`{config_dir}/plugins/config/<id>.yaml`，与插件运行时 `host.config` 同源——设置表单只是该文件的编辑器，插件自身 host.config.set 写的值重启后表单可见；不存 AppSettings（那里只有 plugin_id）
+- **插件目录独立**：`{config_dir}/plugins`，不与 XimeChe 的 `~/.config/xime/plugins` 共享（daemon 会扫描重载 emoji 插件，混用 registry 互相干扰）；.xipk 包本身双端通用
+- **UI 层与插件层解耦**：ui.rs 只消费纯数据（InstalledPlugin/PluginFieldSpec/StorePlugin），desktop.rs 负责 client::plugin 类型转换——ui.rs 无需感知 feature 门控
+- **feature 结构**：app `tray` 依赖 `plugin`（桌面才有插件面板），`--no-default-features` 最小构建两者都不含；client `plugin = [dep:xime-plugin, dep:serde_yaml]`
+- **rustup 代理坑（本机开发环境）**：ZCode 沙箱改写 argv[0]，rustup 代理（~/.cargo/bin/cargo→rustup）报 unknown proxy name；用 `~/.rustup/toolchains/stable-*/bin/{cargo,rustc}` 直连 + `RUSTC=` 环境变量绕过
+- **GPG 提交**：`git commit -S`；gpg-agent 口令缓存过期后 pinentry 超时需用户重新解锁

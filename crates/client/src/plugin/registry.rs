@@ -129,6 +129,7 @@ impl SyncPluginManager {
 
     /// 调用插件 `testConnection` 契约：`Ok(None)` 成功，`Ok(Some(消息))` 为失败原因。
     /// 使用已落盘的插件配置（表单测试前应先保存）。
+    /// 插件未实现该契约函数时返回 `Ok(Some("插件未实现…"))`，不发请求也不误报成功。
     pub fn test_connection(&self, id: &str) -> Result<Option<String>, RegistryError> {
         let manifest = self.manifest(id)?;
         let runtime = PluginRuntime::load(
@@ -136,6 +137,9 @@ impl SyncPluginManager {
             &manifest.entry,
             &self.inner.config_path(id),
         )?;
+        if !runtime.has_fn("testConnection") {
+            return Ok(Some("插件未实现 testConnection，无法测试连接".into()));
+        }
         Ok(runtime.test_connection())
     }
 }
@@ -154,28 +158,26 @@ mod tests {
         let options = zip::write::SimpleFileOptions::default();
         zip.start_file("manifest.yaml", options).unwrap();
         zip.write_all(
-            format!(
-                "id: com.example.sync_fixture\n\
-                 name: Fixture Sync\n\
-                 version: 1.0.0\n\
-                 type: clipboard_sync\n\
-                 activation: single\n\
-                 entry: main.lua\n\
-                 configSchema:\n\
-                 \x20 - key: serverUrl\n\
-                 \x20   label: 服务器地址\n\
-                 \x20   type: text\n\
-                 \x20   placeholder: https://host:port\n\
-                 \x20 - key: password\n\
-                 \x20   label: 密码\n\
-                 \x20   type: secret\n\
-                 \x20   required: false\n\
-                 \x20 - key: testConnection\n\
-                 \x20   label: 测试连接\n\
-                 \x20   type: button\n\
-                 \x20   action: testConnection\n"
-            )
-            .as_bytes(),
+            "id: com.example.sync_fixture\n\
+             name: Fixture Sync\n\
+             version: 1.0.0\n\
+             type: clipboard_sync\n\
+             activation: single\n\
+             entry: main.lua\n\
+             configSchema:\n\
+             \x20 - key: serverUrl\n\
+             \x20   label: 服务器地址\n\
+             \x20   type: text\n\
+             \x20   placeholder: https://host:port\n\
+             \x20 - key: password\n\
+             \x20   label: 密码\n\
+             \x20   type: secret\n\
+             \x20   required: false\n\
+             \x20 - key: testConnection\n\
+             \x20   label: 测试连接\n\
+             \x20   type: button\n\
+             \x20   action: testConnection\n"
+                .as_bytes(),
         )
         .unwrap();
         zip.start_file("main.lua", options).unwrap();

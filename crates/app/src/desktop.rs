@@ -13,17 +13,22 @@
 //! 零配置：server 未配置密码时自动生成随机密码并落盘
 //! `{data_dir}/auth_password`（权限 0600），client 复用同一密码连本机 server。
 
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use client::clipboard::SystemClipboard;
 use client::config::ClientConfig;
 use client::history_store::LocalHistory;
+use client::plugin::{PluginFieldType, SyncPluginManager};
 use client::sync::{SyncEngine, SyncStatus};
 use xime_sync_domain::profile::Profile;
 
 use crate::settings::{AppSettings, SyncMode};
-use crate::ui::{ApplySettingsPayload, UiCmd, UiMsg, UiSender, run_ui, ui_channel, ui_cmd_channel};
+use crate::ui::{
+    ApplySettingsPayload, InstalledPlugin, UiCmd, UiMsg, UiSender, run_ui, ui_channel,
+    ui_cmd_channel,
+};
 
 /// 本机局域网 IPv4：经默认路由探测（UDP connect 不发包），零新依赖。
 /// 返回的是局域网其他设备可直接连接的地址；无可用路由时返回 None。
@@ -111,6 +116,55 @@ fn config_dir(settings: &xime_sync_server::config::Settings) -> String {
     }
 }
 
+/// 同步插件根目录（`{config_dir}/plugins`，与 ximed-client.toml 同处）。
+///
+/// 独立于 XimeChe 的 `~/.config/xime/plugins`，避免 daemon 插件热重载互相干扰；
+/// .xipk 插件包本身双端通用。
+fn plugins_root(config_dir: &str) -> PathBuf {
+    Path::new(config_dir).join("plugins")
+}
+
+/// 读取已安装同步插件（含 schema 字段与当前配置）为 UI 纯数据。
+fn installed_plugins(root: &Path) -> Vec<InstalledPlugin> {
+    let manager = SyncPluginManager::new(root);
+    manager
+        .list_sync()
+        .into_iter()
+        .filter_map(|record| {
+            let fields = manager.config_fields(&record.id);
+            let values = manager.load_config(&record.id).ok()?;
+            let id = record.id;
+            // 空名回退 id
+            let name = if record.name.is_empty() {
+                id.clone()
+            } else {
+                record.name
+            };
+            Some(InstalledPlugin {
+                id,
+                name,
+                version: record.version,
+                fields: fields
+                    .into_iter()
+                    .map(|f| crate::ui::PluginFieldSpec {
+                        key: f.key,
+                        label: f.label,
+                        kind: match f.field_type {
+                            PluginFieldType::Text => crate::ui::PluginFieldKind::Text,
+                            PluginFieldType::Secret => crate::ui::PluginFieldKind::Secret,
+                            PluginFieldType::Button => crate::ui::PluginFieldKind::Button,
+                        },
+                        required: f.required,
+                        placeholder: f.placeholder,
+                        help_text: f.help_text,
+                    })
+                    .collect(),
+                values: values.into_iter().collect(),
+            })
+        })
+        .collect()
+}
+
 /// 由本地 server 的监听地址推导 client 连接地址（desktop 同进程自动配置）。
 ///
 /// server 绑定通配地址（0.0.0.0 / ::）时 client 走回环 127.0.0.1；
@@ -179,6 +233,11 @@ fn apply_client_adapter(
             client_cfg.s3_access_key = app_settings.s3_access_key.clone();
             client_cfg.s3_secret_key = app_settings.s3_secret_key.clone();
         }
+        AdapterKind::Plugin => {
+            client_cfg.adapter = AdapterKind::Plugin;
+            client_cfg.plugins_dir = plugins_root(&config_dir(settings)).display().to_string();
+            client_cfg.plugin_id = app_settings.plugin_id.clone();
+        }
     }
 }
 
@@ -225,6 +284,16 @@ async fn desktop_control_loop(
         &tx,
         local_history.clone(),
     );
+    // 已安装同步插件列表推送 UI（安装/卸载后再推送）
+    let _ = tx.send(UiMsg::PluginInstalled {
+        plugins: installed_plugins(&plugins_root(&config_dir(&settings))),
+    });
+    // 本机 server 连接信息下发 UI：ximed_sync 插件表单自动填充本地配置
+    let _ = tx.send(UiMsg::LocalServerInfo(crate::ui::LocalServerInfo {
+        url: local_server_url(&settings),
+        username: settings.auth().username.clone(),
+        password: server_pw.clone(),
+    }));
 
     // 打开配置文件所在目录（macOS `open`，Linux `xdg-open`）
     let open_dir = || {
@@ -302,6 +371,123 @@ async fn desktop_control_loop(
                 UiCmd::OpenConfigDir => {
                     open_dir();
                 }
+                UiCmd::PluginRefreshIndex => {
+                    let tx_index = tx.clone();
+                    tokio::spawn(async move {
+                        match client::plugin::fetch_index(client::plugin::DEFAULT_PLUGIN_INDEX_URL)
+                            .await
+                        {
+                            Ok(index) => {
+                                let entries = index
+                                    .clipboard_sync()
+                                    .into_iter()
+                                    .filter_map(|entry| {
+                                        let dl = entry.latest_download()?;
+                                        Some(crate::ui::StorePlugin {
+                                            id: entry.id.clone(),
+                                            name: entry.name.clone(),
+                                            version: entry.current_version.clone(),
+                                            description: entry.description.clone(),
+                                            url: dl.url.clone(),
+                                            sha256: dl.sha256.clone(),
+                                        })
+                                    })
+                                    .collect();
+                                let _ = tx_index.send(UiMsg::PluginStoreLoaded {
+                                    updated_at: index.updated_at,
+                                    entries,
+                                });
+                            }
+                            Err(e) => {
+                                let _ = tx_index.send(UiMsg::PluginStoreFailed {
+                                    message: e.to_string(),
+                                });
+                            }
+                        }
+                    });
+                }
+                UiCmd::PluginInstall { url, sha256, name } => {
+                    let root = plugins_root(&config_dir(&settings));
+                    let tx_install = tx.clone();
+                    tokio::spawn(async move {
+                        let result = async {
+                            let xipk = client::plugin::download_xipk(&url, &sha256)
+                                .await
+                                .map_err(|e| e.to_string())?;
+                            let installed = SyncPluginManager::new(&root)
+                                .install_from_zip(&xipk, true)
+                                .map_err(|e| e.to_string());
+                            let _ = std::fs::remove_file(&xipk);
+                            installed
+                        }
+                        .await;
+                        let error = result.err();
+                        let _ = tx_install.send(UiMsg::PluginInstallDone {
+                            name: name.clone(),
+                            error,
+                        });
+                        let _ = tx_install.send(UiMsg::PluginInstalled {
+                            plugins: installed_plugins(&root),
+                        });
+                    });
+                }
+                UiCmd::PluginUninstall { id } => {
+                    let root = plugins_root(&config_dir(&settings));
+                    if let Err(e) = SyncPluginManager::new(&root).uninstall(&id) {
+                        tracing::warn!("failed to uninstall plugin {id}: {e}");
+                    }
+                    // 卸载的是当前激活插件：回退默认适配器（本机 server）并重建引擎
+                    let mut app_settings = AppSettings::load(&config_dir(&settings));
+                    if app_settings.plugin_id == id {
+                        app_settings.plugin_id.clear();
+                        app_settings.adapter = client::config::AdapterKind::Server;
+                        if let Err(e) = app_settings.save(&config_dir(&settings)) {
+                            tracing::warn!("failed to persist app settings: {e}");
+                        }
+                        apply_client_adapter(&app_settings, &mut client_cfg, &settings, &server_pw);
+                        stop_client_services(&mut engine_task, &mut history_task);
+                        spawn_client_services(
+                            &mut engine_task,
+                            &mut history_task,
+                            &client_cfg,
+                            &server_pw,
+                            &sync_settings,
+                            history_limit,
+                            &tx,
+                            local_history.clone(),
+                        );
+                    }
+                    let _ = tx.send(UiMsg::PluginInstalled {
+                        plugins: installed_plugins(&root),
+                    });
+                }
+                UiCmd::PluginTestConnection { id, values } => {
+                    // testConnection 可能走真实网络（数秒），spawn_blocking 避免阻塞命令循环
+                    let root = plugins_root(&config_dir(&settings));
+                    let tx_test = tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let manager = SyncPluginManager::new(&root);
+                        let map: BTreeMap<String, String> = values.into_iter().collect();
+                        let result = manager
+                            .save_config(&id, &map)
+                            .and_then(|_| manager.test_connection(&id));
+                        let msg = match result {
+                            Ok(None) => UiMsg::PluginTestResult {
+                                ok: true,
+                                message: String::new(),
+                            },
+                            Ok(Some(reason)) => UiMsg::PluginTestResult {
+                                ok: false,
+                                message: reason,
+                            },
+                            Err(e) => UiMsg::PluginTestResult {
+                                ok: false,
+                                message: e.to_string(),
+                            },
+                        };
+                        let _ = tx_test.send(msg);
+                    });
+                }
                 UiCmd::ApplySettings(payload) => {
                     let ApplySettingsPayload {
                         adapter,
@@ -318,6 +504,8 @@ async fn desktop_control_loop(
                         s3_region,
                         s3_access_key,
                         s3_secret_key,
+                        plugin_id,
+                        plugin_values,
                         sync,
                     } = *payload;
                     let app_settings = AppSettings {
@@ -351,10 +539,23 @@ async fn desktop_control_loop(
                         } else {
                             Some(s3_secret_key.clone())
                         },
+                        plugin_id: plugin_id.clone(),
                         sync,
                     };
                     if let Err(e) = app_settings.save(&config_dir(&settings)) {
                         tracing::warn!("failed to persist app settings: {e}");
+                    }
+                    // 插件适配器：表单值写入 config/<id>.yaml（host.config 同源），
+                    // 引擎重建后新通道即读取新配置
+                    if app_settings.adapter == client::config::AdapterKind::Plugin
+                        && !app_settings.plugin_id.is_empty()
+                    {
+                        let map: BTreeMap<String, String> = plugin_values.into_iter().collect();
+                        if let Err(e) = SyncPluginManager::new(plugins_root(&config_dir(&settings)))
+                            .save_config(&app_settings.plugin_id, &map)
+                        {
+                            tracing::warn!("failed to save plugin config: {e}");
+                        }
                     }
                     // 更新 client 连接配置（按适配器）
                     apply_client_adapter(&app_settings, &mut client_cfg, &settings, &server_pw);

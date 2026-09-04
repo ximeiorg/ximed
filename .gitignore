@@ -3,3 +3,4 @@
 client-history.db
 # Local cargo config (created for libximecore patch; CI/release uses git deps)
 .cargo/config.toml
+/.zcode

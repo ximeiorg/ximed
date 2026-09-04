@@ -63,6 +63,10 @@ pub struct AppSettings {
     /// S3 直连：Secret Key（敏感项明文落盘；desktop 单机场景可接受）。
     #[serde(default)]
     pub s3_secret_key: Option<String>,
+    /// 同步插件 id（adapter = plugin 时生效）。
+    /// 插件配置值不存这里：存 `{config_dir}/plugins/config/<id>.yaml`（host.config 同源）。
+    #[serde(default)]
+    pub plugin_id: String,
     /// 同步设置（定义在 client crate，app → client 依赖方向）。
     #[serde(default)]
     pub sync: SyncSettings,
@@ -89,6 +93,7 @@ impl Default for AppSettings {
             s3_region: default_s3_region(),
             s3_access_key: None,
             s3_secret_key: None,
+            plugin_id: String::new(),
             sync: SyncSettings::default(),
         }
     }
@@ -146,6 +151,7 @@ mod tests {
             s3_region: "us-west-2".to_string(),
             s3_access_key: Some("AKIA".to_string()),
             s3_secret_key: Some("secret".to_string()),
+            plugin_id: "com.example.sync".to_string(),
             sync: SyncSettings {
                 switch_on: true,
                 push_switch_on: false,

@@ -34,7 +34,8 @@ use client::config::AdapterKind;
 pub enum Panel {
     Status,
     History,
-    Settings,
+    /// 同步：同步方式（插件选择 + 插件配置表单）+ 同步开关 + 插件商店。
+    Sync,
 }
 
 /// 后台 → UI 的桌面级事件（跨线程 channel 负载）。
@@ -60,6 +61,21 @@ pub enum UiMsg {
     Downloaded { source: Option<String> },
     /// 设置已保存并应用（连接模式/远程服务器已生效）。
     SettingsApplied,
+    /// 插件商店索引已加载（仅 clipboard_sync 条目）。
+    PluginStoreLoaded {
+        updated_at: String,
+        entries: Vec<StorePlugin>,
+    },
+    /// 插件商店索引拉取/解析失败。
+    PluginStoreFailed { message: String },
+    /// 已安装同步插件列表刷新（启动/安装/卸载后推送）。
+    PluginInstalled { plugins: Vec<InstalledPlugin> },
+    /// 单个插件安装完成（error 为 None 表示成功）。
+    PluginInstallDone { name: String, error: Option<String> },
+    /// 插件 testConnection 结果（ok = false 时 message 为失败原因）。
+    PluginTestResult { ok: bool, message: String },
+    /// 本机 server 连接信息（desktop 后台启动时下发，供 ximed_sync 插件表单自动填充）。
+    LocalServerInfo(LocalServerInfo),
     /// 显示窗口（托盘菜单/左键点击触发）。
     ShowWindow,
     /// 隐藏窗口到托盘（托盘菜单触发）。
@@ -81,6 +97,73 @@ pub enum UiCmd {
     OpenConfigDir,
     /// 应用新设置（同步适配器 + 连接模式 + 直连/远程表单 + 同步设置），持久化并重启 client 引擎。
     ApplySettings(Box<ApplySettingsPayload>),
+    /// 拉取插件商店索引（clipboard_sync 条目）。
+    PluginRefreshIndex,
+    /// 从商店下载并安装同步插件。
+    PluginInstall {
+        url: String,
+        sha256: String,
+        name: String,
+    },
+    /// 卸载已安装的同步插件。
+    PluginUninstall { id: String },
+    /// 保存插件表单当前值并调用插件 testConnection 契约。
+    PluginTestConnection {
+        id: String,
+        values: Vec<(String, String)>,
+    },
+}
+
+/// 插件配置字段渲染规格（后台自 configSchema 转换的纯数据，UI 不感知 Lua 插件层）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginFieldSpec {
+    pub key: String,
+    pub label: String,
+    pub kind: PluginFieldKind,
+    pub required: bool,
+    pub placeholder: String,
+    pub help_text: String,
+}
+
+/// 字段渲染类型（宽松对应 manifest 的 text/secret/button）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginFieldKind {
+    Text,
+    Secret,
+    Button,
+}
+
+/// 已安装的同步插件（含 schema 字段与当前配置值，供设置页动态表单）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledPlugin {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub fields: Vec<PluginFieldSpec>,
+    /// 当前配置（key → value）。
+    pub values: Vec<(String, String)>,
+}
+
+/// 插件商店条目（index.yaml 中 pluginType == clipboard_sync 的远端插件）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorePlugin {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub url: String,
+    pub sha256: String,
+}
+
+/// 识别为"对接本机 server"的同步插件：装载表单时空缺字段自动填充本地连接配置。
+pub const XIMED_SYNC_PLUGIN_ID: &str = "com.kingzcheung.xime.plugin.ximed_sync";
+
+/// 本机 server 连接信息（desktop 后台下发给 UI，供 [`XIMED_SYNC_PLUGIN_ID`] 表单预填）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalServerInfo {
+    pub url: String,
+    pub username: String,
+    pub password: String,
 }
 
 /// 设置保存载荷（独立结构避免 UiCmd variant 大小差异过大）。
@@ -100,6 +183,10 @@ pub struct ApplySettingsPayload {
     pub s3_region: String,
     pub s3_access_key: String,
     pub s3_secret_key: String,
+    /// 激活的同步插件 id（adapter = plugin 时生效）。
+    pub plugin_id: String,
+    /// 插件表单当前值（adapter = plugin 时由后台写入 config/<id>.yaml）。
+    pub plugin_values: Vec<(String, String)>,
     pub sync: client::settings::SyncSettings,
 }
 
@@ -128,34 +215,6 @@ pub enum Message {
     OpenConfigDir,
     /// 退出按钮。
     Quit,
-    /// 切换连接模式（本地 / 远程 server）。
-    SettingsMode(SyncMode),
-    /// 切换同步适配器（server / webdav / s3）。
-    SettingsAdapter(client::config::AdapterKind),
-    /// 远程服务器地址输入。
-    SettingsUrl(String),
-    /// 远程服务器用户名输入。
-    SettingsUsername(String),
-    /// 远程服务器密码输入。
-    SettingsPassword(String),
-    /// WebDAV 直连地址输入。
-    SettingsWebDavUrl(String),
-    /// WebDAV 直连目录输入。
-    SettingsWebDavDir(String),
-    /// WebDAV 直连用户名输入。
-    SettingsWebDavUsername(String),
-    /// WebDAV 直连密码输入。
-    SettingsWebDavPassword(String),
-    /// S3 直连端点输入。
-    SettingsS3Endpoint(String),
-    /// S3 直连存储桶输入。
-    SettingsS3Bucket(String),
-    /// S3 直连区域输入。
-    SettingsS3Region(String),
-    /// S3 直连 Access Key 输入。
-    SettingsS3AccessKey(String),
-    /// S3 直连 Secret Key 输入。
-    SettingsS3SecretKey(String),
     /// 同步主开关。
     SettingsSyncSwitch(bool),
     /// 推送开关（本地 → 服务器）。
@@ -172,6 +231,20 @@ pub enum Message {
     SettingsSyncMaxFileMb(String),
     /// 收到远端内容时通知开关。
     SettingsSyncNotify(bool),
+    /// 选择作为同步方式的插件（选中即激活，保存后生效）。
+    SettingsPluginId(String),
+    /// 编辑插件配置字段（key 定位字段，一条消息覆盖所有动态字段）。
+    SettingsPluginField { key: String, value: String },
+    /// 停用插件同步方式，恢复默认（连接本机 server）。
+    SyncUseServer,
+    /// 测试插件连接（保存表单当前值后调用 testConnection）。
+    PluginTestConnection,
+    /// 刷新插件商店索引。
+    PluginStoreRefresh,
+    /// 安装商店插件（按 id 定位条目）。
+    PluginStoreInstall(String),
+    /// 卸载已安装插件。
+    PluginUninstall(String),
     /// 保存并应用设置。
     ApplySettings,
 }
@@ -243,6 +316,22 @@ pub struct UiState {
     pub sync_max_file_mb: String,
     /// 收到远端内容时通知开关（设置面板编辑）。
     pub sync_notify: bool,
+    /// 已安装的同步插件（后台推送，含 schema 与当前配置）。
+    pub installed_plugins: Vec<InstalledPlugin>,
+    /// 插件商店条目（后台拉取的 clipboard_sync 插件）。
+    pub store_plugins: Vec<StorePlugin>,
+    /// 插件商店状态文本（更新时间/错误/进行中提示）。
+    pub store_status: String,
+    /// 设置页选中的插件 id（adapter = plugin 时生效）。
+    pub plugin_id: String,
+    /// 选中插件的 schema 字段（动态表单渲染依据）。
+    pub plugin_fields: Vec<PluginFieldSpec>,
+    /// 与 plugin_fields 平行的编辑态值。
+    pub plugin_values: Vec<String>,
+    /// 插件测试连接状态文本。
+    pub plugin_test_status: String,
+    /// 本机 server 连接信息（desktop 下发；None 为 client-only 形态）。
+    pub local_server_info: Option<LocalServerInfo>,
     /// 设置保存状态提示文本。
     pub settings_status: String,
     /// client 是否已连上 server（引擎上报）。
@@ -301,6 +390,14 @@ impl UiState {
             sync_upload_single_file: app_settings.sync.upload_single_file,
             sync_max_file_mb: (app_settings.sync.max_file_byte / (1024 * 1024)).to_string(),
             sync_notify: app_settings.sync.notify_on_downloaded,
+            installed_plugins: Vec::new(),
+            store_plugins: Vec::new(),
+            store_status: String::new(),
+            plugin_id: app_settings.plugin_id.clone(),
+            plugin_fields: Vec::new(),
+            plugin_values: Vec::new(),
+            plugin_test_status: String::new(),
+            local_server_info: None,
             settings_status: String::new(),
             sync_online: false,
             cmd_tx,
@@ -425,6 +522,49 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
         Message::Backend(UiMsg::SettingsApplied) => {
             state.settings_status = "已保存并应用。".to_string();
         }
+        Message::Backend(UiMsg::PluginStoreLoaded {
+            updated_at,
+            entries,
+        }) => {
+            state.store_plugins = entries;
+            state.store_status = if updated_at.is_empty() {
+                String::new()
+            } else {
+                format!("索引更新于 {updated_at}")
+            };
+        }
+        Message::Backend(UiMsg::PluginStoreFailed { message }) => {
+            state.store_status = format!("索引拉取失败：{message}");
+        }
+        Message::Backend(UiMsg::PluginInstalled { plugins }) => {
+            let selection_lost = state.adapter == AdapterKind::Plugin
+                && !state.plugin_id.is_empty()
+                && !plugins.iter().any(|p| p.id == state.plugin_id);
+            state.installed_plugins = plugins;
+            if state.adapter == AdapterKind::Plugin {
+                // 当前选中插件被卸载/丢失：清空表单编辑态并回退默认同步方式
+                let current = state.plugin_id.clone();
+                state.load_plugin_edit_state(&current);
+                if selection_lost {
+                    state.plugin_id.clear();
+                    state.adapter = AdapterKind::Server;
+                }
+            }
+        }
+        Message::Backend(UiMsg::PluginInstallDone { name, error }) => match error {
+            None => state.store_status = format!("已安装 {name}。"),
+            Some(e) => state.store_status = format!("安装 {name} 失败：{e}"),
+        },
+        Message::Backend(UiMsg::PluginTestResult { ok, message }) => {
+            state.plugin_test_status = if ok {
+                "连接成功。".to_string()
+            } else {
+                format!("连接失败：{message}")
+            };
+        }
+        Message::Backend(UiMsg::LocalServerInfo(info)) => {
+            state.local_server_info = Some(info);
+        }
         Message::Backend(UiMsg::ShowWindow) => {
             return show_window(state);
         }
@@ -470,62 +610,6 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
         Message::OpenConfigDir => {
             let _ = state.cmd_tx.send(UiCmd::OpenConfigDir);
         }
-        Message::SettingsMode(mode) => {
-            state.sync_mode = mode;
-            state.settings_status = String::new();
-        }
-        Message::SettingsAdapter(adapter) => {
-            state.adapter = adapter;
-            state.settings_status = String::new();
-        }
-        Message::SettingsUrl(url) => {
-            state.remote_url = url;
-            state.settings_status = String::new();
-        }
-        Message::SettingsUsername(username) => {
-            state.remote_username = username;
-            state.settings_status = String::new();
-        }
-        Message::SettingsPassword(password) => {
-            state.remote_password = password;
-            state.settings_status = String::new();
-        }
-        Message::SettingsWebDavUrl(url) => {
-            state.webdav_url = url;
-            state.settings_status = String::new();
-        }
-        Message::SettingsWebDavDir(dir) => {
-            state.webdav_dir = dir;
-            state.settings_status = String::new();
-        }
-        Message::SettingsWebDavUsername(username) => {
-            state.webdav_username = username;
-            state.settings_status = String::new();
-        }
-        Message::SettingsWebDavPassword(password) => {
-            state.webdav_password = password;
-            state.settings_status = String::new();
-        }
-        Message::SettingsS3Endpoint(endpoint) => {
-            state.s3_endpoint = endpoint;
-            state.settings_status = String::new();
-        }
-        Message::SettingsS3Bucket(bucket) => {
-            state.s3_bucket = bucket;
-            state.settings_status = String::new();
-        }
-        Message::SettingsS3Region(region) => {
-            state.s3_region = region;
-            state.settings_status = String::new();
-        }
-        Message::SettingsS3AccessKey(key) => {
-            state.s3_access_key = key;
-            state.settings_status = String::new();
-        }
-        Message::SettingsS3SecretKey(key) => {
-            state.s3_secret_key = key;
-            state.settings_status = String::new();
-        }
         Message::SettingsSyncSwitch(on) => {
             state.sync_switch_on = on;
             state.settings_status = String::new();
@@ -561,6 +645,71 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
             state.sync_notify = on;
             state.settings_status = String::new();
         }
+        Message::SettingsPluginId(id) => {
+            // 选中即激活（保存后生效）；选中插件缺失时回退第一个已安装插件
+            state.plugin_id = id;
+            state.adapter = AdapterKind::Plugin;
+            state.plugin_test_status = String::new();
+            state.settings_status = String::new();
+            if !state
+                .installed_plugins
+                .iter()
+                .any(|p| p.id == state.plugin_id)
+            {
+                state.plugin_id = state
+                    .installed_plugins
+                    .first()
+                    .map(|p| p.id.clone())
+                    .unwrap_or_default();
+            }
+            let current = state.plugin_id.clone();
+            state.load_plugin_edit_state(&current);
+        }
+        Message::SyncUseServer => {
+            // 停用插件方式，恢复默认（连接本机 server）；保存后生效
+            state.adapter = AdapterKind::Server;
+            state.plugin_test_status = String::new();
+            state.settings_status =
+                "将恢复默认（连接本机 server），点击「保存并应用」生效。".to_string();
+        }
+        Message::SettingsPluginField { key, value } => {
+            if let Some(idx) = state.plugin_fields.iter().position(|f| f.key == key)
+                && let Some(slot) = state.plugin_values.get_mut(idx)
+            {
+                *slot = value;
+            }
+            state.plugin_test_status = String::new();
+        }
+        Message::PluginTestConnection => {
+            if state.plugin_id.is_empty() {
+                state.plugin_test_status = "请先选择插件。".to_string();
+            } else {
+                state.plugin_test_status = "测试中…".to_string();
+                let cmd = UiCmd::PluginTestConnection {
+                    id: state.plugin_id.clone(),
+                    values: state.plugin_form_values(),
+                };
+                let _ = state.cmd_tx.send(cmd);
+            }
+        }
+        Message::PluginStoreRefresh => {
+            state.store_status = "正在刷新索引…".to_string();
+            let _ = state.cmd_tx.send(UiCmd::PluginRefreshIndex);
+        }
+        Message::PluginStoreInstall(id) => match state.store_plugins.iter().find(|p| p.id == id) {
+            Some(entry) => {
+                state.store_status = format!("正在下载 {}…", entry.name);
+                let _ = state.cmd_tx.send(UiCmd::PluginInstall {
+                    url: entry.url.clone(),
+                    sha256: entry.sha256.clone(),
+                    name: entry.name.clone(),
+                });
+            }
+            None => state.store_status = "插件不在当前索引中，请刷新。".to_string(),
+        },
+        Message::PluginUninstall(id) => {
+            let _ = state.cmd_tx.send(UiCmd::PluginUninstall { id });
+        }
         Message::ApplySettings => {
             let cmd = UiCmd::ApplySettings(Box::new(ApplySettingsPayload {
                 adapter: state.adapter,
@@ -577,6 +726,12 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
                 s3_region: state.s3_region.clone(),
                 s3_access_key: state.s3_access_key.clone(),
                 s3_secret_key: state.s3_secret_key.clone(),
+                plugin_id: state.plugin_id.clone(),
+                plugin_values: if state.adapter == AdapterKind::Plugin {
+                    state.plugin_form_values()
+                } else {
+                    Vec::new()
+                },
                 sync: state.sync_settings(),
             }));
             if state.cmd_tx.send(cmd).is_ok() {
@@ -612,6 +767,74 @@ impl UiState {
             max_file_byte,
             notify_on_downloaded: self.sync_notify,
         }
+    }
+
+    /// 插件根目录（提示安装位置用）。
+    pub fn plugins_dir(&self) -> String {
+        std::path::Path::new(&self.config_dir)
+            .join("plugins")
+            .display()
+            .to_string()
+    }
+
+    /// 载入插件的表单编辑态：schema 字段 + 已保存配置值（缺失键为空串）+ 本地预填。
+    fn load_plugin_edit_state(&mut self, id: &str) {
+        match self.installed_plugins.iter().find(|p| p.id == id) {
+            Some(p) => {
+                self.plugin_fields = p.fields.clone();
+                self.plugin_values = p
+                    .fields
+                    .iter()
+                    .map(|f| {
+                        p.values
+                            .iter()
+                            .find(|(k, _)| k == &f.key)
+                            .map(|(_, v)| v.clone())
+                            .unwrap_or_default()
+                    })
+                    .collect();
+                self.prefill_local_server_config(id);
+            }
+            None => {
+                self.plugin_fields.clear();
+                self.plugin_values.clear();
+            }
+        }
+    }
+
+    /// [`XIMED_SYNC_PLUGIN_ID`]（对接 ximed server 的同步插件）：本机 server 信息
+    /// 可用时，把空缺的 serverUrl/username/password 自动填充为本地连接配置。
+    /// 已有值（用户保存过或插件自写）不覆盖。
+    fn prefill_local_server_config(&mut self, id: &str) {
+        if id != XIMED_SYNC_PLUGIN_ID {
+            return;
+        }
+        let Some(info) = &self.local_server_info else {
+            return;
+        };
+        for (idx, field) in self.plugin_fields.iter().enumerate() {
+            let fill = match field.key.as_str() {
+                "serverUrl" => Some(&info.url),
+                "username" => Some(&info.username),
+                "password" => Some(&info.password),
+                _ => None,
+            };
+            if let (Some(v), Some(slot)) = (fill, self.plugin_values.get_mut(idx))
+                && slot.is_empty()
+            {
+                *slot = v.clone();
+            }
+        }
+    }
+
+    /// 当前表单编辑态 → (key, value) 列表（测试连接/保存用）。
+    fn plugin_form_values(&self) -> Vec<(String, String)> {
+        self.plugin_fields
+            .iter()
+            .zip(self.plugin_values.iter())
+            .filter(|(f, _)| f.kind != PluginFieldKind::Button)
+            .map(|(f, v)| (f.key.clone(), v.clone()))
+            .collect()
     }
 
     /// 创建托盘（仅一次）。必须在主线程、事件循环已运行时调用。
@@ -813,6 +1036,25 @@ fn danger_button(_theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
+/// 危险描边按钮（小尺寸动作，如插件卸载）。
+fn danger_outline_button(_theme: &Theme, status: button::Status) -> button::Style {
+    let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+    button::Style {
+        background: if hovered {
+            Some(Background::Color(RED_DIM))
+        } else {
+            None
+        },
+        text_color: RED,
+        border: Border {
+            color: if hovered { RED } else { BORDER_STRONG },
+            width: 1.0,
+            radius: border::radius(RADIUS_SM),
+        },
+        ..button::Style::default()
+    }
+}
+
 /// 文本输入框样式：深色底 + 边框，聚焦时主色描边。
 fn input_style(_theme: &Theme, status: text_input::Status) -> text_input::Style {
     let border_color = match status {
@@ -851,9 +1093,9 @@ fn view(state: &UiState) -> Element<'_, Message> {
     .spacing(2)
     .padding([20, 14]);
 
-    // 设置面板仅 desktop 形态（存在本地 server 可切换）显示
+    // 同步面板仅 desktop 形态显示（client-only 无设置能力，同步全默认）
     if state.local_server {
-        nav = nav.push(nav_button("设置", Panel::Settings, state.panel));
+        nav = nav.push(nav_button("同步", Panel::Sync, state.panel));
     }
 
     // 侧栏底部：退出
@@ -874,7 +1116,7 @@ fn view(state: &UiState) -> Element<'_, Message> {
     let content = match state.panel {
         Panel::Status => status_view(state),
         Panel::History => history_view(state),
-        Panel::Settings => settings_view(state),
+        Panel::Sync => sync_view(state),
     };
     let content = container(content)
         .width(Length::Fill)
@@ -1433,29 +1675,33 @@ fn format_time(unix: i64) -> String {
     }
 }
 
-/// 设置面板：同步设置卡片 + 连接模式卡片 + 保存。
-fn settings_view(state: &UiState) -> Element<'_, Message> {
-    let sync_card = container(sync_card_body(state))
+/// 同步面板：同步方式（插件选择 + 插件配置表单）+ 同步开关 + 插件商店。
+///
+/// 同步配置完全由插件承载（manifest configSchema 动态渲染表单，新增插件零硬编码）；
+/// 原生 server/WebDAV/S3 适配器保留为 daemon/配置文件能力，UI 不再暴露表单，
+/// 仅提供「恢复默认（连接本机 server）」一键回退。
+fn sync_view(state: &UiState) -> Element<'_, Message> {
+    let target_card = container(sync_target_body(state))
         .width(Length::Fill)
         .padding(16)
         .style(card);
-    let conn_card = container(conn_card_body(state))
+    let switch_card = container(sync_card_body(state))
+        .width(Length::Fill)
+        .padding(16)
+        .style(card);
+    let store_card = container(store_body(state))
         .width(Length::Fill)
         .padding(16)
         .style(card);
 
     let body = column![
-        panel_header("设置", "连接模式、同步开关与上传白名单"),
+        panel_header("同步", "同步方式（插件）、开关与插件商店"),
         Space::new().height(8),
-        conn_card,
+        target_card,
         Space::new().height(4),
-        sync_card,
+        switch_card,
         Space::new().height(4),
-        button("保存并应用")
-            .on_press(Message::ApplySettings)
-            .padding([10, 18])
-            .style(primary_button),
-        text(&state.settings_status).size(12).color(TEXT_MUTED),
+        store_card,
     ]
     .spacing(6);
 
@@ -1463,6 +1709,232 @@ fn settings_view(state: &UiState) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
+}
+
+/// 同步方式卡片：当前生效方式 + 插件选择（选中即激活，含卸载）+ 插件配置动态表单。
+fn sync_target_body(state: &UiState) -> Element<'_, Message> {
+    let mut body = column![card_title("同步方式")].spacing(8);
+
+    // 当前生效方式
+    let active_line = match state.adapter {
+        AdapterKind::Plugin => match state
+            .installed_plugins
+            .iter()
+            .find(|p| p.id == state.plugin_id)
+        {
+            Some(p) => format!("当前生效：插件「{}」", p.name),
+            None => "当前生效：插件（未选择，保存后按 HTTP 兜底）".to_string(),
+        },
+        _ => "当前生效：本机 server（默认）".to_string(),
+    };
+    body = body.push(text(active_line).size(12).color(TEXT_MUTED));
+
+    if state.installed_plugins.is_empty() {
+        body = body.push(
+            column![
+                text("尚未安装同步插件。").size(12).color(TEXT_MUTED),
+                text(format!(
+                    "可在下方商店安装；插件目录：{}",
+                    state.plugins_dir()
+                ))
+                .size(11)
+                .color(TEXT_FAINT),
+            ]
+            .spacing(2),
+        );
+    }
+    // 插件选择列表（单选激活，同 manifest activation: single 语义）
+    for plugin in &state.installed_plugins {
+        let selected = state.plugin_id == plugin.id;
+        let is_target = state.adapter == AdapterKind::Plugin && selected;
+        body = body.push(
+            row![
+                button(
+                    row![
+                        text(if is_target { "●" } else { "○" })
+                            .size(12)
+                            .color(if selected { ACCENT } else { TEXT_FAINT }),
+                        column![
+                            text(format!("{} ({})", plugin.name, plugin.version))
+                                .size(13)
+                                .color(if selected { TEXT_MAIN } else { TEXT_MUTED }),
+                            text(&plugin.id).size(11).color(TEXT_FAINT),
+                        ]
+                        .spacing(1),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                )
+                .on_press(Message::SettingsPluginId(plugin.id.clone()))
+                .padding([8, 10])
+                .width(Length::Fill)
+                .style(move |_theme, status| {
+                    let hovered =
+                        matches!(status, button::Status::Hovered | button::Status::Pressed);
+                    button::Style {
+                        background: Some(Background::Color(if selected {
+                            ACCENT_DIM
+                        } else if hovered {
+                            SURFACE_HOVER
+                        } else {
+                            SURFACE
+                        })),
+                        text_color: TEXT_MAIN,
+                        border: Border {
+                            color: if selected { ACCENT } else { BORDER },
+                            width: 1.0,
+                            radius: border::radius(RADIUS_MD),
+                        },
+                        ..button::Style::default()
+                    }
+                }),
+                button(text("卸载").size(12).color(RED))
+                    .on_press(Message::PluginUninstall(plugin.id.clone()))
+                    .padding([6, 12])
+                    .style(danger_outline_button),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        );
+    }
+
+    // 动态表单（manifest configSchema 驱动）：text/secret → 文本输入（secret 掩码），
+    // button → 动作按钮（当前支持 testConnection 契约）；保存写入 config/<id>.yaml，
+    // 与插件运行时 host.config 同源，无需为每个插件手写表单。
+    for (idx, field) in state.plugin_fields.iter().enumerate() {
+        let value = state.plugin_values.get(idx).cloned().unwrap_or_default();
+        let label = if field.required {
+            format!("{} *", field.label)
+        } else {
+            field.label.clone()
+        };
+        body = body.push(Space::new().height(2));
+        match field.kind {
+            PluginFieldKind::Text | PluginFieldKind::Secret => {
+                // label move 进 text（借用会延长到返回值，本地 String 不行）
+                body = body.push(text(label).size(12).color(TEXT_MUTED));
+                let mut input = TextInput::new(&field.placeholder, &value)
+                    .padding(10)
+                    .style(input_style);
+                input = if field.kind == PluginFieldKind::Secret {
+                    input.secure(true)
+                } else {
+                    input
+                };
+                body = body.push(input.on_input(move |v| Message::SettingsPluginField {
+                    key: field.key.clone(),
+                    value: v,
+                }));
+            }
+            PluginFieldKind::Button => {
+                body = body.push(
+                    button(text(&field.label).size(13))
+                        .on_press(Message::PluginTestConnection)
+                        .padding([8, 14])
+                        .style(primary_button),
+                );
+            }
+        }
+        if !field.help_text.is_empty() {
+            body = body.push(text(&field.help_text).size(11).color(TEXT_FAINT));
+        }
+    }
+
+    // 保存 + 回退默认（插件方式下可一键恢复本机 server）
+    let mut actions = row![
+        button("保存并应用")
+            .on_press(Message::ApplySettings)
+            .padding([10, 18])
+            .style(primary_button),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+    if state.adapter == AdapterKind::Plugin {
+        actions = actions.push(
+            button(
+                text("恢复默认（连接本机 server）")
+                    .size(12)
+                    .color(TEXT_MUTED),
+            )
+            .on_press(Message::SyncUseServer)
+            .padding([10, 12])
+            .style(secondary_button),
+        );
+    }
+    body = body.push(actions);
+    if !state.plugin_test_status.is_empty() {
+        // 测试连接反馈：请求进行中/结果（成功绿字，失败原样带原因）
+        body = body.push(text(&state.plugin_test_status).size(12).color(
+            if state.plugin_test_status == "连接成功。" {
+                GREEN
+            } else {
+                TEXT_MUTED
+            },
+        ));
+    }
+    if !state.settings_status.is_empty() {
+        body = body.push(text(&state.settings_status).size(12).color(TEXT_MUTED));
+    }
+    body.into()
+}
+
+/// 插件商店卡片：索引刷新 + clipboard_sync 插件列表 + 一键安装。
+fn store_body(state: &UiState) -> Element<'_, Message> {
+    let mut body = column![
+        row![
+            card_title("插件商店"),
+            Space::new().width(Length::Fill),
+            button(text("刷新索引").size(12))
+                .on_press(Message::PluginStoreRefresh)
+                .padding([6, 12])
+                .style(primary_button),
+        ]
+        .align_y(Alignment::Center),
+        text(if state.store_status.is_empty() {
+            "仅展示 clipboard_sync 类型插件。"
+        } else {
+            &state.store_status
+        })
+        .size(11)
+        .color(TEXT_MUTED),
+    ]
+    .spacing(8);
+
+    for entry in &state.store_plugins {
+        let installed = state.installed_plugins.iter().any(|p| p.id == entry.id);
+        let action_btn: Element<'_, Message> = if installed {
+            text("已安装").size(12).color(GREEN).into()
+        } else {
+            button(text("安装").size(12))
+                .on_press(Message::PluginStoreInstall(entry.id.clone()))
+                .padding([6, 12])
+                .style(primary_button)
+                .into()
+        };
+        body = body.push(
+            row![
+                column![
+                    text(format!("{} ({})", entry.name, entry.version))
+                        .size(13)
+                        .color(TEXT_MAIN),
+                    text(&entry.description).size(11).color(TEXT_MUTED),
+                ]
+                .spacing(2)
+                .width(Length::Fill),
+                action_btn,
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        );
+    }
+    if state.store_plugins.is_empty() {
+        body = body.push(
+            text("暂无条目；点击「刷新索引」从插件中心拉取。")
+                .size(12)
+                .color(TEXT_FAINT),
+        );
+    }
+    body.into()
 }
 
 /// 同步设置卡片：主开关 + 拉取/推送 + 上传白名单 + 大小上限 + 通知。
@@ -1525,200 +1997,6 @@ fn sync_card_body(state: &UiState) -> Element<'_, Message> {
     .into()
 }
 
-/// 同步目标卡片：适配器选择（server / webdav / s3）+ 对应表单。
-fn conn_card_body(state: &UiState) -> Element<'_, Message> {
-    let adapter_server = seg_button_adapter("ximed server", AdapterKind::Server, state.adapter);
-    let adapter_webdav = seg_button_adapter("WebDAV", AdapterKind::WebDav, state.adapter);
-    let adapter_s3 = seg_button_adapter("S3", AdapterKind::S3, state.adapter);
-    let segmented = container(
-        row![adapter_server, adapter_webdav, adapter_s3]
-            .spacing(2)
-            .padding(2),
-    )
-    .style(|_theme| container::Style {
-        background: Some(Background::Color(SURFACE_HOVER)),
-        border: Border {
-            color: Color::TRANSPARENT,
-            width: 0.0,
-            radius: border::radius(RADIUS_MD),
-        },
-        ..container::Style::default()
-    });
-
-    let mut body = column![card_title("同步目标"), segmented,].spacing(10);
-
-    match state.adapter {
-        AdapterKind::Server => {
-            let mode_local = seg_button("本地服务器", SyncMode::Local, state.sync_mode);
-            let mode_remote = seg_button("远程服务器", SyncMode::Remote, state.sync_mode);
-            let mode_seg =
-                container(row![mode_local, mode_remote].spacing(2).padding(2)).style(|_theme| {
-                    container::Style {
-                        background: Some(Background::Color(SURFACE_HOVER)),
-                        border: Border {
-                            color: Color::TRANSPARENT,
-                            width: 0.0,
-                            radius: border::radius(RADIUS_MD),
-                        },
-                        ..container::Style::default()
-                    }
-                });
-            let hint = match state.sync_mode {
-                SyncMode::Local => text("自动连接本机 server，地址/端口跟随 server 配置。")
-                    .size(12)
-                    .color(TEXT_MUTED),
-                SyncMode::Remote => text("连接下方配置的远程 server；切换后本机 server 将停止。")
-                    .size(12)
-                    .color(TEXT_MUTED),
-            };
-            body = body.push(column![mode_seg, hint,].spacing(6));
-
-            if state.sync_mode == SyncMode::Remote {
-                body = body.push(
-                    column![
-                        Space::new().height(6),
-                        field_label("远程服务器地址"),
-                        TextInput::new("https://example.com:8443", &state.remote_url)
-                            .on_input(Message::SettingsUrl)
-                            .padding(10)
-                            .style(input_style),
-                        Space::new().height(2),
-                        field_label("用户名"),
-                        TextInput::new("alice", &state.remote_username)
-                            .on_input(Message::SettingsUsername)
-                            .padding(10)
-                            .style(input_style),
-                        Space::new().height(2),
-                        field_label("密码"),
-                        TextInput::new("", &state.remote_password)
-                            .secure(true)
-                            .on_input(Message::SettingsPassword)
-                            .padding(10)
-                            .style(input_style),
-                    ]
-                    .spacing(6),
-                );
-            }
-        }
-        AdapterKind::WebDav => {
-            body = body.push(
-                column![
-                    Space::new().height(6),
-                    field_label("WebDAV 地址"),
-                    TextInput::new("https://dav.example.com", &state.webdav_url)
-                        .on_input(Message::SettingsWebDavUrl)
-                        .padding(10)
-                        .style(input_style),
-                    Space::new().height(2),
-                    field_label("目录"),
-                    TextInput::new("xime", &state.webdav_dir)
-                        .on_input(Message::SettingsWebDavDir)
-                        .padding(10)
-                        .style(input_style),
-                    Space::new().height(2),
-                    field_label("用户名"),
-                    TextInput::new("", &state.webdav_username)
-                        .on_input(Message::SettingsWebDavUsername)
-                        .padding(10)
-                        .style(input_style),
-                    Space::new().height(2),
-                    field_label("密码"),
-                    TextInput::new("", &state.webdav_password)
-                        .secure(true)
-                        .on_input(Message::SettingsWebDavPassword)
-                        .padding(10)
-                        .style(input_style),
-                    Space::new().height(4),
-                    text("直连 WebDAV：剪贴板同步到 {地址}/{目录}/clipboard/current.json，无需 ximed server。")
-                        .size(11)
-                        .color(TEXT_FAINT),
-                ]
-                .spacing(6),
-            );
-        }
-        AdapterKind::S3 => {
-            body = body.push(
-                column![
-                    Space::new().height(6),
-                    field_label("S3 端点"),
-                    TextInput::new("https://s3.example.com", &state.s3_endpoint)
-                        .on_input(Message::SettingsS3Endpoint)
-                        .padding(10)
-                        .style(input_style),
-                    Space::new().height(2),
-                    field_label("存储桶"),
-                    TextInput::new("clipboard-bucket", &state.s3_bucket)
-                        .on_input(Message::SettingsS3Bucket)
-                        .padding(10)
-                        .style(input_style),
-                    Space::new().height(2),
-                    field_label("区域"),
-                    TextInput::new("us-east-1", &state.s3_region)
-                        .on_input(Message::SettingsS3Region)
-                        .padding(10)
-                        .style(input_style),
-                    Space::new().height(2),
-                    field_label("Access Key"),
-                    TextInput::new("", &state.s3_access_key)
-                        .secure(true)
-                        .on_input(Message::SettingsS3AccessKey)
-                        .padding(10)
-                        .style(input_style),
-                    Space::new().height(2),
-                    field_label("Secret Key"),
-                    TextInput::new("", &state.s3_secret_key)
-                        .secure(true)
-                        .on_input(Message::SettingsS3SecretKey)
-                        .padding(10)
-                        .style(input_style),
-                    Space::new().height(4),
-                    text("直连 S3（path-style）：同步到 {桶}/clipboard/current.json，无需 ximed server。")
-                        .size(11)
-                        .color(TEXT_FAINT),
-                ]
-                .spacing(6),
-            );
-        }
-    }
-
-    body.into()
-}
-
-/// 适配器分段按钮。
-fn seg_button_adapter<'a>(
-    label: &'a str,
-    adapter: AdapterKind,
-    current: AdapterKind,
-) -> Element<'a, Message> {
-    let active = adapter == current;
-    button(
-        text(label)
-            .size(13)
-            .color(if active { TEXT_MAIN } else { TEXT_MUTED }),
-    )
-    .on_press(Message::SettingsAdapter(adapter))
-    .width(Length::Fill)
-    .padding([8, 14])
-    .style(move |_theme, status| {
-        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-        button::Style {
-            background: if active || hovered {
-                Some(Background::Color(SURFACE))
-            } else {
-                None
-            },
-            text_color: if active { TEXT_MAIN } else { TEXT_MUTED },
-            border: Border {
-                color: Color::TRANSPARENT,
-                width: 0.0,
-                radius: border::radius(RADIUS_SM),
-            },
-            ..button::Style::default()
-        }
-    })
-    .into()
-}
-
 /// 开关行：label + toggler + 说明文本。
 fn toggle_row<'a>(
     label: &'a str,
@@ -1741,36 +2019,6 @@ fn field_label<'a>(label: &'a str) -> Element<'a, Message> {
     text(label).size(12).color(TEXT_MUTED).into()
 }
 
-/// 分段选择按钮（Tailwind 风格的 segmented control）。
-fn seg_button<'a>(label: &'a str, mode: SyncMode, current: SyncMode) -> Element<'a, Message> {
-    let active = mode == current;
-    button(
-        text(label)
-            .size(13)
-            .color(if active { TEXT_MAIN } else { TEXT_MUTED }),
-    )
-    .on_press(Message::SettingsMode(mode))
-    .width(Length::Fill)
-    .padding([8, 14])
-    .style(move |_theme, status| {
-        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-        button::Style {
-            background: if active || hovered {
-                Some(Background::Color(SURFACE))
-            } else {
-                None
-            },
-            text_color: if active { TEXT_MAIN } else { TEXT_MUTED },
-            border: Border {
-                color: Color::TRANSPARENT,
-                width: 0.0,
-                radius: border::radius(RADIUS_SM),
-            },
-            ..button::Style::default()
-        }
-    })
-    .into()
-}
 #[derive(Clone)]
 struct RxId(std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<UiMsg>>>);
 
@@ -1816,6 +2064,120 @@ fn backend_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ximed_sync 插件 fixture：与本机 server 关联字段 + 通用字段。
+    fn sync_plugin_fixture() -> InstalledPlugin {
+        InstalledPlugin {
+            id: XIMED_SYNC_PLUGIN_ID.to_string(),
+            name: "ximed 剪贴板同步".to_string(),
+            version: "0.1.0".to_string(),
+            fields: vec![
+                PluginFieldSpec {
+                    key: "serverUrl".to_string(),
+                    label: "服务器地址".to_string(),
+                    kind: PluginFieldKind::Text,
+                    required: true,
+                    placeholder: String::new(),
+                    help_text: String::new(),
+                },
+                PluginFieldSpec {
+                    key: "username".to_string(),
+                    label: "用户名".to_string(),
+                    kind: PluginFieldKind::Text,
+                    required: false,
+                    placeholder: String::new(),
+                    help_text: String::new(),
+                },
+                PluginFieldSpec {
+                    key: "password".to_string(),
+                    label: "密码".to_string(),
+                    kind: PluginFieldKind::Secret,
+                    required: false,
+                    placeholder: String::new(),
+                    help_text: String::new(),
+                },
+                PluginFieldSpec {
+                    key: "testConnection".to_string(),
+                    label: "测试连接".to_string(),
+                    kind: PluginFieldKind::Button,
+                    required: false,
+                    placeholder: String::new(),
+                    help_text: String::new(),
+                },
+            ],
+            values: vec![(
+                "serverUrl".to_string(),
+                "https://saved.example.com".to_string(),
+            )],
+        }
+    }
+
+    fn test_state() -> UiState {
+        let (tx, _rx) = ui_channel();
+        let (cmd_tx, _cmd_rx) = ui_cmd_channel();
+        UiState::new(
+            &ClientConfig::default(),
+            &crate::settings::AppSettings::default(),
+            tx,
+            cmd_tx,
+            true,
+            "/tmp/ximed-test-cfg".to_string(),
+        )
+    }
+
+    #[test]
+    fn ximed_sync_plugin_prefills_empty_fields_from_local_server() {
+        let mut state = test_state();
+        state.local_server_info = Some(LocalServerInfo {
+            url: "http://127.0.0.1:8443".to_string(),
+            username: "alice".to_string(),
+            password: "local-pw".to_string(),
+        });
+        state.installed_plugins = vec![sync_plugin_fixture()];
+
+        state.load_plugin_edit_state(XIMED_SYNC_PLUGIN_ID);
+        // 已保存值不覆盖；空缺字段填充本地配置；无关字段不动
+        let value_of = |key: &str| -> String {
+            state
+                .plugin_fields
+                .iter()
+                .position(|f| f.key == key)
+                .and_then(|idx| state.plugin_values.get(idx).cloned())
+                .unwrap_or_default()
+        };
+        assert_eq!(value_of("serverUrl"), "https://saved.example.com");
+        assert_eq!(value_of("username"), "alice");
+        assert_eq!(value_of("password"), "local-pw");
+        assert_eq!(value_of("testConnection"), "");
+    }
+
+    #[test]
+    fn other_plugins_do_not_prefill() {
+        let mut state = test_state();
+        state.local_server_info = Some(LocalServerInfo {
+            url: "http://127.0.0.1:8443".to_string(),
+            username: "alice".to_string(),
+            password: "local-pw".to_string(),
+        });
+        let mut plugin = sync_plugin_fixture();
+        plugin.id = "com.other.sync".to_string();
+        state.installed_plugins = vec![plugin];
+
+        state.load_plugin_edit_state("com.other.sync");
+        // 无本地预填：未保存字段保持空（fixture 已保存的 serverUrl 除外）
+        assert_eq!(state.plugin_values[0], "https://saved.example.com");
+        assert!(state.plugin_values[1..].iter().all(|v| v.is_empty()));
+    }
+
+    #[test]
+    fn prefill_requires_local_server_info() {
+        let mut state = test_state();
+        state.installed_plugins = vec![sync_plugin_fixture()];
+
+        state.load_plugin_edit_state(XIMED_SYNC_PLUGIN_ID);
+        // 未保存的 username/password 保持空（无本地信息可填充）
+        assert!(state.plugin_values[1..].iter().all(|v| v.is_empty()));
+    }
 
     #[test]
     fn format_time_buckets() {
