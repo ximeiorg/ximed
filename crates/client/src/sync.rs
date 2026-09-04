@@ -410,6 +410,7 @@ impl SyncEngine {
 /// 按配置构建传输通道：
 /// - server 适配器（默认）：WS 实时，关闭则 HTTP 轮询
 /// - webdav / s3 适配器：直连远端存储（绕过 ximed server）
+/// - plugin 适配器：Lua clipboard_sync 插件通道（需 `plugin` feature）
 fn make_transport(cfg: &ClientConfig, password: &str) -> Arc<dyn Transport> {
     use crate::config::AdapterKind;
     match cfg.adapter {
@@ -417,6 +418,23 @@ fn make_transport(cfg: &ClientConfig, password: &str) -> Arc<dyn Transport> {
             // 直连配置缺失时退化为空通道（引擎将按 Offline 处理）；由上层校验配置
             crate::direct::make_direct_transport(cfg)
                 .unwrap_or_else(|_| Arc::new(crate::transport::HttpTransport::new(cfg, password)))
+        }
+        AdapterKind::Plugin => {
+            #[cfg(feature = "plugin")]
+            match crate::plugin::SyncPluginManager::new(&cfg.plugins_dir)
+                .make_transport(&cfg.plugin_id)
+            {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::warn!("plugin transport unavailable (id={}): {e}", cfg.plugin_id);
+                    Arc::new(crate::transport::HttpTransport::new(cfg, password))
+                }
+            }
+            #[cfg(not(feature = "plugin"))]
+            {
+                tracing::warn!("adapter=plugin requires the client 'plugin' feature");
+                Arc::new(crate::transport::HttpTransport::new(cfg, password))
+            }
         }
         AdapterKind::Server => {
             if cfg.ws_enabled {

@@ -55,8 +55,8 @@ pub fn make_direct_transport(cfg: &ClientConfig) -> Result<Arc<dyn Transport>, T
                 &secret_key,
             )))
         }
-        AdapterKind::Server => Err(TransportError::Connect(
-            "server adapter is not a direct transport".into(),
+        AdapterKind::Server | AdapterKind::Plugin => Err(TransportError::Connect(
+            "server/plugin adapter is not a direct transport".into(),
         )),
     }
 }

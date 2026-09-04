@@ -16,6 +16,8 @@ pub enum AdapterKind {
     WebDav,
     /// 直连 S3 兼容存储（绕过 ximed server）。
     S3,
+    /// 同步插件（Lua clipboard_sync 插件，需 client `plugin` feature）。
+    Plugin,
 }
 
 /// client 配置。
@@ -89,6 +91,12 @@ pub struct ClientConfig {
     /// S3 直连：Secret Key 明文兜底（desktop 设置面板场景；环境变量优先）。
     #[serde(default)]
     pub s3_secret_key: Option<String>,
+    /// 同步插件根目录（adapter=plugin 时生效；`<root>/config/<id>.yaml` 为插件配置）。
+    #[serde(default)]
+    pub plugins_dir: String,
+    /// 激活的同步插件 id（adapter=plugin 时生效）。
+    #[serde(default)]
+    pub plugin_id: String,
 }
 
 impl Default for ClientConfig {
@@ -116,6 +124,8 @@ impl Default for ClientConfig {
             s3_secret_key_env: default_s3_secret_key_env(),
             s3_access_key: None,
             s3_secret_key: None,
+            plugins_dir: String::new(),
+            plugin_id: String::new(),
         }
     }
 }
@@ -297,6 +307,24 @@ mod tests {
         assert_eq!(cfg.s3_region, "us-east-1");
         assert_eq!(cfg.s3_access_key_env, "XIMED_S3_ACCESS_KEY");
         assert_eq!(cfg.s3_secret_key_env, "XIMED_S3_SECRET_KEY");
+        assert_eq!(cfg.plugins_dir, "");
+        assert_eq!(cfg.plugin_id, "");
+    }
+
+    #[test]
+    fn plugin_adapter_deserializes_from_config_file() {
+        // 旧配置文件无 plugin 字段 → 默认；新配置可反序列化 plugin 适配器
+        let legacy: ClientConfig = serde_json::from_str(r#"{"server_url": "http://x"}"#).unwrap();
+        assert_eq!(legacy.adapter, AdapterKind::Server);
+        assert_eq!(legacy.plugins_dir, "");
+
+        let plugin: ClientConfig = serde_json::from_str(
+            r#"{"adapter": "plugin", "plugins_dir": "/cfg/plugins", "plugin_id": "com.example.sync"}"#,
+        )
+        .unwrap();
+        assert_eq!(plugin.adapter, AdapterKind::Plugin);
+        assert_eq!(plugin.plugins_dir, "/cfg/plugins");
+        assert_eq!(plugin.plugin_id, "com.example.sync");
     }
 
     #[test]
