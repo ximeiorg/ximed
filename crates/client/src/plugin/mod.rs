@@ -1,12 +1,24 @@
-//! Lua 剪贴板同步插件传输通道。
+//! Lua 剪贴板同步插件框架。
 //!
-//! 桥接 libximecore `xime-plugin` 的 clipboard_sync 契约（`push`/`pull`/`testConnection`）
-//! 到 [`Transport`] trait：协议逻辑（HTTP 端点、Basic Auth、ETag 条件拉取、S3 SigV4 签名）
-//! 由插件 Lua 用 `host.http` + `host.crypto` 承载，本模块只做 Rust ↔ Lua 的 profile 桥接。
+//! 核心复用 libximecore `xime-plugin`（.xipk 安装、Lua 沙箱运行时），本模块只做三件事：
+//! - Rust ↔ Lua 桥接：clipboard_sync 契约（`push`/`pull`/`testConnection`）→ [`Transport`]
+//! - [`schema`]：manifest `configSchema` 解释，设置表单数据驱动渲染（无需逐插件硬编码）
+//! - [`registry`] / [`index`]：已安装插件管理与商店索引（拉取/下载/校验）
+//!
 //! 与 Android `LuaClipboardSyncPluginAdapter` 同契约，同一 .xipk 可双端复用。
-//!
 //! 引擎的去重/回声抑制/退避逻辑完全复用（[`crate::sync::SyncEngine`]）；通道为拉取式，
 //! `next_event` 睡眠一个轮询周期后 `pull`（同 HTTP 直连语义）。
+
+mod index;
+mod registry;
+mod schema;
+
+pub use index::{
+    DEFAULT_PLUGIN_INDEX_URL, IndexDownload, IndexError, IndexVersion, PluginIndex,
+    PluginIndexEntry, download_xipk, fetch_index, parse_index,
+};
+pub use registry::{RegistryError, SyncPluginManager};
+pub use schema::{PluginConfigField, PluginFieldType, parse_config_schema};
 
 use std::path::Path;
 use std::sync::Arc;
@@ -19,7 +31,13 @@ use xime_sync_domain::profile::Profile;
 use crate::transport::{Transport, TransportError};
 
 /// 从已解压的插件目录构建插件传输通道；manifest 非 clipboard_sync 类型时返回错误。
-pub fn make_plugin_transport(plugin_dir: &Path) -> Result<Arc<dyn Transport>, TransportError> {
+///
+/// `config_file` 为插件配置文件路径（[`SyncPluginManager`] 约定为 `<root>/config/<id>.yaml`，
+/// 与插件运行时 `host.config` 同源）；须由调用方传入而非放在插件目录内，避免重装被清掉。
+pub fn make_plugin_transport(
+    plugin_dir: &Path,
+    config_file: &Path,
+) -> Result<Arc<dyn Transport>, TransportError> {
     let manifest = PluginManifest::from_dir(plugin_dir)
         .map_err(|e| TransportError::Connect(format!("plugin manifest: {e}")))?;
     if manifest.plugin_type() != PluginType::ClipboardSync {
@@ -30,12 +48,8 @@ pub fn make_plugin_transport(plugin_dir: &Path) -> Result<Arc<dyn Transport>, Tr
         )));
     }
     let runtime = Arc::new(
-        PluginRuntime::load(
-            plugin_dir,
-            &manifest.entry,
-            &plugin_dir.join("host_config.yaml"),
-        )
-        .map_err(|e| TransportError::Connect(format!("plugin load: {e}")))?,
+        PluginRuntime::load(plugin_dir, &manifest.entry, config_file)
+            .map_err(|e| TransportError::Connect(format!("plugin load: {e}")))?,
     );
     Ok(Arc::new(PluginTransport { runtime }))
 }
@@ -130,10 +144,15 @@ return plugin
         dir
     }
 
+    /// fixture 插件的标准配置文件路径（目录内，仅测试用）。
+    fn fixture_config(dir: &Path) -> std::path::PathBuf {
+        dir.join("host_config.yaml")
+    }
+
     #[tokio::test]
     async fn push_pull_roundtrip_preserves_profile() {
         let dir = fixture_plugin_dir("roundtrip");
-        let t = make_plugin_transport(&dir).unwrap();
+        let t = make_plugin_transport(&dir, &fixture_config(&dir)).unwrap();
         let p = Profile::from_text("hello 你好", Some("dev-a".to_string()));
         t.push(&p).await.unwrap();
         let got = t.pull().await.unwrap().expect("pull must return profile");
@@ -148,7 +167,7 @@ return plugin
     #[tokio::test]
     async fn empty_remote_pull_returns_none() {
         let dir = fixture_plugin_dir("empty");
-        let t = make_plugin_transport(&dir).unwrap();
+        let t = make_plugin_transport(&dir, &fixture_config(&dir)).unwrap();
         assert!(t.pull().await.unwrap().is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -156,7 +175,7 @@ return plugin
     #[tokio::test]
     async fn next_event_pulls_after_sleep() {
         let dir = fixture_plugin_dir("event");
-        let t = make_plugin_transport(&dir).unwrap();
+        let t = make_plugin_transport(&dir, &fixture_config(&dir)).unwrap();
         t.push(&Profile::from_text("x", None)).await.unwrap();
         let got = t
             .next_event(std::time::Duration::from_millis(10))
@@ -174,7 +193,7 @@ return plugin
             "id: com.example.emoji\nname: Emoji\nversion: 1.0.0\ntype: emoji\n",
         )
         .unwrap();
-        let err = make_plugin_transport(&dir)
+        let err = make_plugin_transport(&dir, &fixture_config(&dir))
             .err()
             .expect("non-clipboard_sync plugin must fail");
         assert!(matches!(err, TransportError::Connect(_)));
@@ -189,7 +208,7 @@ return plugin
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let err = make_plugin_transport(&dir)
+        let err = make_plugin_transport(&dir, &fixture_config(&dir))
             .err()
             .expect("missing manifest must fail");
         assert!(matches!(err, TransportError::Connect(_)));

@@ -27,12 +27,16 @@ tracing = "0.1"
 sha2 = "0.10"
 hmac = "0.12"
 hex = "0.4"
+# 同步插件框架（feature plugin）：configSchema 解析 + 商店索引解析
+serde_yaml = { version = "0.9", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["rt", "macros", "time"] }
+# 测试打包 .xipk fixture（与 xime-plugin 同版本，避免重复编译）
+zip = "8.6"
 
 [features]
 default = []
-# Lua clipboard_sync 插件传输（引入 mlua；仅插件同步需要时开启，server 形态保持最小体积）
-plugin = ["dep:xime-plugin"]
+# Lua clipboard_sync 插件框架（引入 mlua；仅插件同步需要时开启，server 形态保持最小体积）
+plugin = ["dep:xime-plugin", "dep:serde_yaml"]
