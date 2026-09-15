@@ -1,15 +1,15 @@
 # PROGRESS
 
-> 更新：2026-09-04 · 阶段：同步插件框架（clipboard_sync 插件接入适配器体系 + 同步独立菜单）
+> 更新：2026-09-15 · 阶段：对齐上游 xime-plugin 新契约（configSchema → Lua getSettingsSchema）
 
 ## 当前状态
 
-- **同步插件框架（本次）**：复用 libximecore `xime-plugin`（.xipk 安装/Lua 沙箱/clipboard_sync 契约），ximed 侧补齐三块——configSchema 解释器（设置表单数据驱动）、SyncPluginManager（已装插件管理/配置读写/构建通道）、插件商店索引（index.ximei.me 拉取/sha256 校验下载）
-- **同步独立菜单（本次二轮调整）**：侧栏「同步」页 = 同步方式（插件单选激活 + 插件 configSchema 动态表单 + 测试连接 + 恢复默认）+ 同步开关卡片 + 插件商店；**原生 server/WebDAV/S3 表单从 UI 移除**（保留为 daemon/ximed.toml 配置能力），设置页随之取消——选中插件即激活，卸载激活插件自动回退本机 server
-- **ximed_sync 插件自动填充（本次三轮）**：desktop 后台把本机 server 连接信息（url/username/password，经 `UiMsg::LocalServerInfo` 下发）给 UI；选中 `com.kingzcheung.xime.plugin.ximed_sync` 时空缺的 serverUrl/username/password 字段自动填入本地配置（已保存值不覆盖），三条件单测覆盖（其他插件不填/无本地信息不填/已有值不覆盖）
-- **插件成为第四种同步适配器**：`AdapterKind::Plugin` + `ClientConfig{plugins_dir, plugin_id}`；默认仍为本机 server（零配置开箱即用），选插件并保存后切换
-- **上游修复（libximecore@1403bff）**：`PluginManifest.config_schema` 缺 `serde(rename = "configSchema")`，真实插件的 camelCase 键从未被反序列化过；已修复并补测试
-- 测试全绿（client 60 含插件 feature + app 14）；fmt/clippy 三种 feature 组合干净；`--no-default-features` 最小 server 构建不受影响
+- **上游契约迁移（本次）**：libximecore 已移除 `PluginManifest.config_schema` 字段与 `PluginRuntime::has_fn`（改用 backup 契约 + settings schema，schema 由插件 Lua `getSettingsSchema()` 运行时返回），ximed 侧适配完成——`config_fields` 改为加载运行时取 `get_settings_schema()` 映射表单字段（按钮 action = 按钮 key，即契约函数名）；`test_connection` 用 `call_fn` 缺失检测替代 `has_fn` 保持「未实现不误报成功」语义；schema 的 required 改为跟随插件声明（上游缺失即 false，旧 manifest 缺省必填约定弃用，ui 仅作提示标记）
+- **同步插件框架**：复用 libximecore `xime-plugin`（.xipk 安装/Lua 沙箱/clipboard_sync 契约），ximed 侧补齐三块——schema 解释器（设置表单数据驱动）、SyncPluginManager（已装插件管理/配置读写/构建通道）、插件商店索引（index.ximei.me 拉取/sha256 校验下载）
+- **同步独立菜单**：侧栏「同步」页 = 同步方式（插件单选激活 + schema 动态表单 + 测试连接 + 恢复默认）+ 同步开关卡片 + 插件商店；**原生 server/WebDAV/S3 表单从 UI 移除**（保留为 daemon/ximed.toml 配置能力），设置页随之取消——选中插件即激活，卸载激活插件自动回退本机 server
+- **ximed_sync 插件自动填充**：desktop 后台把本机 server 连接信息经 `UiMsg::LocalServerInfo` 下发；空字段自动填入本地配置（已保存值不覆盖）
+- **插件成为第四种同步适配器**：`AdapterKind::Plugin` + `ClientConfig{plugins_dir, plugin_id}`；默认仍为本机 server（零配置开箱即用）
+- 测试全绿（client 60 含插件 feature + app 14）；fmt/clippy 干净；`--no-default-features` 最小 server 构建不受影响
 
 ## 下一步
 
@@ -38,7 +38,8 @@
 
 ## 关键实现细节（本次会话）
 
-- **configSchema 约定**（ximed 定义，libximecore 只存宽松 Value）：字段 `key/label/type/required/placeholder/helpText/action`；type ∈ text|secret|button（未知按 text）；required 缺省视为必填（线上必填字段惯常省略该键）；值统一按字符串读写（host.config 为 String→String YAML）
+- **schema 契约（上游 00ba2b5 起，兼容新老插件）**：schema 来自插件 Lua `getSettingsSchema()` 运行时返回（上游已删 manifest `configSchema` 字段与宿主连接语义）；字段 `key/label/type/required/placeholder/helpText`；type ∈ text|secret|button（未知按 text）；按钮 action 即按钮 key（所调契约函数名，如 testConnection）；required 透传插件声明（上游缺失即 false，不再缺省必填——ui 仅作提示标记，两种语义都可跑）；值统一按字符串读写（host.config 为 String→String YAML）
+- **test_connection 契约缺失检测**：`PluginRuntime` 无 `has_fn`，经 `call_fn::<()>("testConnection", ())` 返回 None 判定未实现，返回「插件未实现 testConnection」而非误报成功；实现但执行报错仍由 call_fn 兜底日志
 - **插件配置存储**：`{config_dir}/plugins/config/<id>.yaml`，与插件运行时 `host.config` 同源——设置表单只是该文件的编辑器，插件自身 host.config.set 写的值重启后表单可见；不存 AppSettings（那里只有 plugin_id）
 - **插件目录独立**：`{config_dir}/plugins`，不与 XimeChe 的 `~/.config/xime/plugins` 共享（daemon 会扫描重载 emoji 插件，混用 registry 互相干扰）；.xipk 包本身双端通用
 - **UI 层与插件层解耦**：ui.rs 只消费纯数据（InstalledPlugin/PluginFieldSpec/StorePlugin），desktop.rs 负责 client::plugin 类型转换——ui.rs 无需感知 feature 门控

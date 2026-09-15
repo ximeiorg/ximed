@@ -17,7 +17,7 @@ use xime_plugin::{
     PluginManager, PluginManifest, PluginRecord, PluginRecordState, PluginRuntime, PluginType,
 };
 
-use super::schema::{PluginConfigField, parse_config_schema};
+use super::schema::{PluginConfigField, parse_settings_schema};
 use crate::transport::{Transport, TransportError};
 
 /// 同步插件管理错误。
@@ -71,11 +71,21 @@ impl SyncPluginManager {
         Ok(self.inner.load_manifest(id)?)
     }
 
-    /// manifest 声明的配置字段（configSchema）；manifest 缺失/损坏时为空。
+    /// 插件运行时声明的配置字段（Lua `getSettingsSchema` 契约）；运行时加载失败时为空。
     pub fn config_fields(&self, id: &str) -> Vec<PluginConfigField> {
-        self.manifest(id)
-            .map(|m| parse_config_schema(&m.config_schema))
-            .unwrap_or_default()
+        let manifest = match self.manifest(id) {
+            Ok(m) => m,
+            Err(_) => return Vec::new(),
+        };
+        let runtime = match PluginRuntime::load(
+            &self.inner.plugin_dir(id),
+            &manifest.entry,
+            &self.inner.config_path(id),
+        ) {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+        parse_settings_schema(&runtime.get_settings_schema())
     }
 
     /// 读取插件配置（`host.config` 同源文件）；文件缺失或损坏视为空配置。
@@ -137,7 +147,11 @@ impl SyncPluginManager {
             &manifest.entry,
             &self.inner.config_path(id),
         )?;
-        if !runtime.has_fn("testConnection") {
+        // xime-plugin 无 has_fn：契约函数缺失时内部会记 error 日志。
+        // 缺失检测：call_fn 返回 None 即未实现（内部测试连接不发请求）；
+        // 与 test_connection 的语义相反，需要显式区分才不致误报成功。
+        let missing = runtime.call_fn::<()>("testConnection", ()).is_none();
+        if missing {
             return Ok(Some("插件未实现 testConnection，无法测试连接".into()));
         }
         Ok(runtime.test_connection())
@@ -150,7 +164,7 @@ mod tests {
     use crate::plugin::schema::PluginFieldType;
     use std::io::Write;
 
-    /// 打包 clipboard_sync fixture 插件为 .xipk（manifest 带 configSchema）。
+    /// 打包 clipboard_sync fixture 插件为 .xipk（schema 走 Lua `getSettingsSchema` 契约）。
     fn fixture_xipk(dir: &Path, test_connection_returns: &str) -> PathBuf {
         let xipk = dir.join("fixture.xipk");
         let file = std::fs::File::create(&xipk).unwrap();
@@ -163,20 +177,7 @@ mod tests {
              version: 1.0.0\n\
              type: clipboard_sync\n\
              activation: single\n\
-             entry: main.lua\n\
-             configSchema:\n\
-             \x20 - key: serverUrl\n\
-             \x20   label: 服务器地址\n\
-             \x20   type: text\n\
-             \x20   placeholder: https://host:port\n\
-             \x20 - key: password\n\
-             \x20   label: 密码\n\
-             \x20   type: secret\n\
-             \x20   required: false\n\
-             \x20 - key: testConnection\n\
-             \x20   label: 测试连接\n\
-             \x20   type: button\n\
-             \x20   action: testConnection\n"
+             entry: main.lua\n"
                 .as_bytes(),
         )
         .unwrap();
@@ -198,6 +199,14 @@ function plugin.testConnection()
     local url = host.config.get("serverUrl")
     if url == nil or url == "" then return "serverUrl 未配置" end
     return {test_connection_returns}
+end
+function plugin.getSettingsSchema()
+    return {{
+        {{ key = "serverUrl", label = "服务器地址", type = "text",
+           placeholder = "https://host:port" }},
+        {{ key = "password", label = "密码", type = "secret", required = false }},
+        {{ key = "testConnection", label = "测试连接", type = "button" }},
+    }}
 end
 return plugin
 "#
@@ -228,12 +237,15 @@ return plugin
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].name, "Fixture Sync");
 
-        // configSchema → 表单字段（含 button 类型）
+        // getSettingsSchema → 表单字段（含 button 类型，按钮 action 即 key）
         let fields = manager.config_fields("com.example.sync_fixture");
         assert_eq!(fields.len(), 3);
         assert_eq!(fields[0].key, "serverUrl");
-        assert!(fields[0].required);
-        assert_eq!(fields[2].field_type, PluginFieldType::Button);
+        assert_eq!(fields[0].placeholder, "https://host:port");
+        assert!(!fields[0].required);
+        assert!(fields[1].field_type == PluginFieldType::Secret);
+        assert!(fields[2].field_type == PluginFieldType::Button);
+        assert_eq!(fields[2].action, "testConnection");
 
         // 配置读写（与 host.config 同源，扁平 String→String YAML）
         let mut values = manager.load_config("com.example.sync_fixture").unwrap();

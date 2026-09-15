@@ -2,7 +2,7 @@
 //!
 //! 核心复用 libximecore `xime-plugin`（.xipk 安装、Lua 沙箱运行时），本模块只做三件事：
 //! - Rust ↔ Lua 桥接：clipboard_sync 契约（`push`/`pull`/`testConnection`）→ [`Transport`]
-//! - [`schema`]：manifest `configSchema` 解释，设置表单数据驱动渲染（无需逐插件硬编码）
+//! - [`schema`]：`getSettingsSchema` 契约解释，设置表单数据驱动渲染（无需逐插件硬编码）
 //! - [`registry`] / [`index`]：已安装插件管理与商店索引（拉取/下载/校验）
 //!
 //! 与 Android `LuaClipboardSyncPluginAdapter` 同契约，同一 .xipk 可双端复用。
@@ -18,7 +18,7 @@ pub use index::{
     PluginIndexEntry, download_xipk, fetch_index, parse_index,
 };
 pub use registry::{RegistryError, SyncPluginManager};
-pub use schema::{PluginConfigField, PluginFieldType, parse_config_schema};
+pub use schema::{PluginConfigField, PluginFieldType, parse_settings_schema};
 
 use std::path::Path;
 use std::sync::Arc;

@@ -1,24 +1,23 @@
-//! manifest `configSchema` 解释：宿主据此渲染插件配置表单（数据驱动，无需逐插件硬编码）。
+//! `getSettingsSchema` 契约解释：宿主据此渲染插件配置表单（数据驱动，无需逐插件硬编码）。
 //!
-//! 约定与线上 clipboard_sync 插件（Xime 仓库）一致，宽松解析：
+//! schema 由插件 Lua 入口的 `getSettingsSchema()` 返回（上游 xime-plugin 已移除
+//! manifest `configSchema` 字段），经 [`PluginRuntime::get_settings_schema`] 落到本模块转换。
+//! 约定与 XimeChe 一致，宽松解析：
 //!
-//! ```yaml
-//! configSchema:
-//!   - key: serverUrl        # 配置键：宿主写入 config/<id>.yaml，插件经 host.config 读取
-//!     label: 服务器地址
-//!     type: text            # text | secret | button；缺省/未知按 text
-//!     required: false       # 缺省视为必填（线上必填字段惯常省略该键）
-//!     placeholder: https://host:port
-//!     helpText: 可选提示文字
-//!   - key: testConnection
-//!     label: 测试连接
-//!     type: button
-//!     action: testConnection # 按钮触发的插件契约函数
+//! ```lua
+//! function plugin.getSettingsSchema()
+//!     return {
+//!         { key = "serverUrl", label = "服务器地址", type = "text",          -- text | secret | button
+//!           required = false, placeholder = "https://host:port",
+//!           helpText = "可选提示文字" },
+//!         { key = "testConnection", label = "测试连接", type = "button" },    -- 按钮即调 key 同名契约函数
+//!     }
+//! end
 //! ```
 //!
 //! 配置值一律按字符串读写（`host.config` 为 String→String 映射）。
 
-use serde::Deserialize;
+use xime_plugin::SettingField;
 
 /// 配置字段类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,53 +48,35 @@ pub struct PluginConfigField {
     pub action: String,
 }
 
-#[derive(Debug, Default, Deserialize)]
-struct RawField {
-    #[serde(default)]
-    key: String,
-    #[serde(default)]
-    label: String,
-    #[serde(rename = "type", default)]
-    field_type: String,
-    #[serde(default = "default_required")]
-    required: bool,
-    #[serde(default)]
-    placeholder: String,
-    #[serde(rename = "helpText", default)]
-    help_text: String,
-    #[serde(default)]
-    action: String,
-}
-
-fn default_required() -> bool {
-    true
-}
-
-/// 解析 manifest 的 `configSchema`（宽松）：非列表或缺 key 的条目跳过，未知类型按 text。
-pub fn parse_config_schema(value: &serde_yaml::Value) -> Vec<PluginConfigField> {
-    let Ok(raw) = serde_yaml::from_value::<Vec<RawField>>(value.clone()) else {
-        return Vec::new();
-    };
-    raw.into_iter()
+/// 转换插件运行时 schema（宽松）：缺 key 的条目由上游丢弃，未知类型按 text。
+pub fn parse_settings_schema(schema: &[SettingField]) -> Vec<PluginConfigField> {
+    schema
+        .iter()
         .filter(|f| !f.key.is_empty())
         .map(|f| {
             let label = if f.label.is_empty() {
                 f.key.clone()
             } else {
-                f.label
+                f.label.clone()
             };
+            let ftype = f.ftype.to_lowercase();
             PluginConfigField {
-                field_type: match f.field_type.to_lowercase().as_str() {
+                field_type: match ftype.as_str() {
                     "secret" => PluginFieldType::Secret,
                     "button" => PluginFieldType::Button,
                     _ => PluginFieldType::Text,
                 },
-                key: f.key,
+                key: f.key.clone(),
                 label,
                 required: f.required,
-                placeholder: f.placeholder,
-                help_text: f.help_text,
-                action: f.action,
+                placeholder: f.placeholder.clone().unwrap_or_default(),
+                help_text: f.help_text.clone().unwrap_or_default(),
+                // 按钮字段无独立 action 键：契约约定按钮的 key 即所调函数名
+                action: if ftype == "button" {
+                    f.key.clone()
+                } else {
+                    String::new()
+                },
             }
         })
         .collect()
@@ -105,42 +86,58 @@ pub fn parse_config_schema(value: &serde_yaml::Value) -> Vec<PluginConfigField> 
 mod tests {
     use super::*;
 
-    /// 线上 WebDAV 同步插件的真实 schema（节选自 0.1.0 .xipk manifest）。
-    const REAL_SCHEMA: &str = r#"
-- key: davUrl
-  label: WebDAV 服务器
-  type: text
-  placeholder: https://host:port/dav/
-  helpText: WebDAV 服务地址
-- key: remotePath
-  label: 远程目录
-  type: text
-  required: false
-- key: username
-  label: 用户名
-  type: text
-  required: false
-- key: password
-  label: 密码
-  type: secret
-  required: false
-- key: testConnection
-  label: 测试连接
-  type: button
-  action: testConnection
-  required: false
-"#;
+    /// 线上 WebDAV 同步插件的真实 schema（节选自 0.1.0 .xipk `getSettingsSchema` 返回）。
+    fn real_schema() -> Vec<SettingField> {
+        vec![
+            SettingField {
+                key: "davUrl".into(),
+                label: "WebDAV 服务器".into(),
+                ftype: "text".into(),
+                placeholder: Some("https://host:port/dav/".into()),
+                help_text: Some("WebDAV 服务地址".into()),
+                required: false,
+                ..Default::default()
+            },
+            SettingField {
+                key: "remotePath".into(),
+                label: "远程目录".into(),
+                ftype: "text".into(),
+                required: false,
+                ..Default::default()
+            },
+            SettingField {
+                key: "username".into(),
+                label: "用户名".into(),
+                ftype: "text".into(),
+                required: false,
+                ..Default::default()
+            },
+            SettingField {
+                key: "password".into(),
+                label: "密码".into(),
+                ftype: "secret".into(),
+                required: false,
+                ..Default::default()
+            },
+            SettingField {
+                key: "testConnection".into(),
+                label: "测试连接".into(),
+                ftype: "button".into(),
+                required: false,
+                ..Default::default()
+            },
+        ]
+    }
 
     #[test]
     fn parses_real_world_schema() {
-        let value: serde_yaml::Value = serde_yaml::from_str(REAL_SCHEMA).unwrap();
-        let fields = parse_config_schema(&value);
+        let fields = parse_settings_schema(&real_schema());
         assert_eq!(fields.len(), 5);
 
         assert_eq!(fields[0].key, "davUrl");
         assert_eq!(fields[0].field_type, PluginFieldType::Text);
-        // 必填字段省略 required 键 → 默认必填
-        assert!(fields[0].required);
+        // required 直接透传插件声明（插件未声明时上游视为非必填，区别于旧的 manifest 缺省必填约定）
+        assert!(!fields[0].required);
         assert_eq!(fields[0].placeholder, "https://host:port/dav/");
         assert_eq!(fields[0].help_text, "WebDAV 服务地址");
 
@@ -149,24 +146,23 @@ mod tests {
 
         let button = &fields[4];
         assert_eq!(button.field_type, PluginFieldType::Button);
+        // 按钮即调 key 同名契约函数
         assert_eq!(button.action, "testConnection");
     }
 
     #[test]
-    fn missing_or_invalid_schema_yields_empty() {
-        assert!(parse_config_schema(&serde_yaml::Value::Null).is_empty());
-        let scalar: serde_yaml::Value = serde_yaml::from_str("42").unwrap();
-        assert!(parse_config_schema(&scalar).is_empty());
-        // 条目缺 key → 跳过
-        let no_key: serde_yaml::Value = serde_yaml::from_str("- label: 只有标签").unwrap();
-        assert!(parse_config_schema(&no_key).is_empty());
+    fn empty_schema_yields_empty() {
+        assert!(parse_settings_schema(&[]).is_empty());
     }
 
     #[test]
     fn unknown_type_falls_back_to_text_and_empty_label_uses_key() {
-        let yaml: serde_yaml::Value =
-            serde_yaml::from_str("- key: n\n  type: number\n  label: ''").unwrap();
-        let fields = parse_config_schema(&yaml);
+        let fields = parse_settings_schema(&[SettingField {
+            key: "n".into(),
+            label: String::new(),
+            ftype: "number".into(),
+            ..Default::default()
+        }]);
         assert_eq!(fields.len(), 1);
         assert_eq!(fields[0].field_type, PluginFieldType::Text);
         assert_eq!(fields[0].label, "n");
