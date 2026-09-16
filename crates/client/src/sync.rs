@@ -73,7 +73,7 @@ pub struct SyncEngine {
     /// 下载通知回调（收到远端内容且通知开关开启时调用，携带来源设备）。
     download_handler: Option<Arc<dyn Fn(Option<String>) + Send + Sync>>,
     /// 历史记录回调（push 成功 / 写入本地剪贴板时调用，携带 profile）。
-    /// 桌面形态注入：server 模式记录到 server（引擎不感知），直连模式记录到本地库。
+    /// 桌面形态注入：server 模式记录到 server（引擎不感知），插件模式记录到本地库。
     history_handler: Option<Arc<dyn Fn(&Profile) + Send + Sync>>,
 }
 
@@ -409,16 +409,10 @@ impl SyncEngine {
 
 /// 按配置构建传输通道：
 /// - server 适配器（默认）：WS 实时，关闭则 HTTP 轮询
-/// - webdav / s3 适配器：直连远端存储（绕过 ximed server）
 /// - plugin 适配器：Lua clipboard_sync 插件通道（需 `plugin` feature）
 fn make_transport(cfg: &ClientConfig, password: &str) -> Arc<dyn Transport> {
     use crate::config::AdapterKind;
     match cfg.adapter {
-        AdapterKind::WebDav | AdapterKind::S3 => {
-            // 直连配置缺失时退化为空通道（引擎将按 Offline 处理）；由上层校验配置
-            crate::direct::make_direct_transport(cfg)
-                .unwrap_or_else(|_| Arc::new(crate::transport::HttpTransport::new(cfg, password)))
-        }
         AdapterKind::Plugin => {
             #[cfg(feature = "plugin")]
             match crate::plugin::SyncPluginManager::new(&cfg.plugins_dir)

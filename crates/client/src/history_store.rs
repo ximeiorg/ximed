@@ -1,7 +1,7 @@
-//! 客户端本地剪贴板历史（直连适配器模式使用）。
+//! 客户端本地剪贴板历史（插件适配器模式使用）。
 //!
 //! server 适配器模式的历史由 server 的 SQLite `HistoryRepo` 记录、client 经
-//! HTTP API 拉取；直连适配器（webdav/s3）没有 server，本模块复用
+//! HTTP API 拉取；插件适配器（Lua clipboard_sync 插件）没有 server，本模块复用
 //! [`xime_sync_store::HistoryRepo`] 在 client 本地记录剪贴板历史，供历史面板展示。
 //!
 //! 记录时机：同步引擎每次把本地内容推送到远端、或把远端内容写入本地时，

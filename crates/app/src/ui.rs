@@ -95,7 +95,7 @@ pub enum UiCmd {
     ServerStop,
     /// 打开配置文件所在目录。
     OpenConfigDir,
-    /// 应用新设置（同步适配器 + 连接模式 + 直连/远程表单 + 同步设置），持久化并重启 client 引擎。
+    /// 应用新设置（同步适配器 + 连接模式 + 远端/插件表单 + 同步设置），持久化并重启 client 引擎。
     ApplySettings(Box<ApplySettingsPayload>),
     /// 拉取插件商店索引（clipboard_sync 条目）。
     PluginRefreshIndex,
@@ -174,15 +174,6 @@ pub struct ApplySettingsPayload {
     pub remote_url: String,
     pub remote_username: String,
     pub remote_password: String,
-    pub webdav_url: String,
-    pub webdav_dir: String,
-    pub webdav_username: String,
-    pub webdav_password: String,
-    pub s3_endpoint: String,
-    pub s3_bucket: String,
-    pub s3_region: String,
-    pub s3_access_key: String,
-    pub s3_secret_key: String,
     /// 激活的同步插件 id（adapter = plugin 时生效）。
     pub plugin_id: String,
     /// 插件表单当前值（adapter = plugin 时由后台写入 config/<id>.yaml）。
@@ -274,7 +265,7 @@ pub struct UiState {
     pub config_dir: String,
     /// 连接模式（本地 / 远程 server）。
     pub sync_mode: SyncMode,
-    /// 同步适配器（server / webdav / s3）。
+    /// 同步适配器（server / plugin）。
     pub adapter: client::config::AdapterKind,
     /// 远程服务器地址（设置面板编辑）。
     pub remote_url: String,
@@ -282,24 +273,6 @@ pub struct UiState {
     pub remote_username: String,
     /// 远程服务器密码（设置面板编辑）。
     pub remote_password: String,
-    /// WebDAV 直连地址（设置面板编辑）。
-    pub webdav_url: String,
-    /// WebDAV 直连目录（设置面板编辑）。
-    pub webdav_dir: String,
-    /// WebDAV 直连用户名（设置面板编辑）。
-    pub webdav_username: String,
-    /// WebDAV 直连密码（设置面板编辑）。
-    pub webdav_password: String,
-    /// S3 直连端点（设置面板编辑）。
-    pub s3_endpoint: String,
-    /// S3 直连存储桶（设置面板编辑）。
-    pub s3_bucket: String,
-    /// S3 直连区域（设置面板编辑）。
-    pub s3_region: String,
-    /// S3 直连 Access Key（设置面板编辑）。
-    pub s3_access_key: String,
-    /// S3 直连 Secret Key（设置面板编辑）。
-    pub s3_secret_key: String,
     /// 同步主开关（设置面板编辑）。
     pub sync_switch_on: bool,
     /// 推送开关（设置面板编辑）。
@@ -373,15 +346,6 @@ impl UiState {
             remote_url: app_settings.remote_url.clone(),
             remote_username: app_settings.remote_username.clone(),
             remote_password: app_settings.remote_password.clone().unwrap_or_default(),
-            webdav_url: app_settings.webdav_url.clone(),
-            webdav_dir: app_settings.webdav_dir.clone(),
-            webdav_username: app_settings.webdav_username.clone(),
-            webdav_password: app_settings.webdav_password.clone().unwrap_or_default(),
-            s3_endpoint: app_settings.s3_endpoint.clone(),
-            s3_bucket: app_settings.s3_bucket.clone(),
-            s3_region: app_settings.s3_region.clone(),
-            s3_access_key: app_settings.s3_access_key.clone().unwrap_or_default(),
-            s3_secret_key: app_settings.s3_secret_key.clone().unwrap_or_default(),
             sync_switch_on: app_settings.sync.switch_on,
             sync_push_on: app_settings.sync.push_switch_on,
             sync_pull_on: app_settings.sync.pull_switch_on,
@@ -717,15 +681,6 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
                 remote_url: state.remote_url.clone(),
                 remote_username: state.remote_username.clone(),
                 remote_password: state.remote_password.clone(),
-                webdav_url: state.webdav_url.clone(),
-                webdav_dir: state.webdav_dir.clone(),
-                webdav_username: state.webdav_username.clone(),
-                webdav_password: state.webdav_password.clone(),
-                s3_endpoint: state.s3_endpoint.clone(),
-                s3_bucket: state.s3_bucket.clone(),
-                s3_region: state.s3_region.clone(),
-                s3_access_key: state.s3_access_key.clone(),
-                s3_secret_key: state.s3_secret_key.clone(),
                 plugin_id: state.plugin_id.clone(),
                 plugin_values: if state.adapter == AdapterKind::Plugin {
                     state.plugin_form_values()
@@ -1677,9 +1632,9 @@ fn format_time(unix: i64) -> String {
 
 /// 同步面板：同步方式（插件选择 + 插件配置表单）+ 同步开关 + 插件商店。
 ///
-/// 同步配置完全由插件承载（manifest configSchema 动态渲染表单，新增插件零硬编码）；
-/// 原生 server/WebDAV/S3 适配器保留为 daemon/配置文件能力，UI 不再暴露表单，
-/// 仅提供「恢复默认（连接本机 server）」一键回退。
+/// 同步配置完全由插件承载（getSettingsSchema 动态渲染表单，新增插件零硬编码）；
+/// 默认/远端路径走本地或远端 ximed server（daemon 配置能力），UI 仅暴露
+/// 「恢复默认（连接本机 server）」一键回退。
 fn sync_view(state: &UiState) -> Element<'_, Message> {
     let target_card = container(sync_target_body(state))
         .width(Length::Fill)

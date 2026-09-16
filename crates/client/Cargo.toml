@@ -23,11 +23,9 @@ thiserror = "2"
 # 在无剪贴板桥接（如 KDE 未运行 klipper）时读不到 Wayland 原生应用的复制内容
 arboard = { version = "3", features = ["wayland-data-control"] }
 tracing = "0.1"
-# S3 直连适配器：AWS SigV4 签名（轻量，无 openssl）
-sha2 = "0.10"
-hmac = "0.12"
-hex = "0.4"
-# 同步插件框架（feature plugin）：configSchema 解析 + 商店索引解析
+# 同步插件框架（feature plugin）：商店索引 sha256 校验 + configSchema 解析
+sha2 = { version = "0.10", optional = true }
+hex = { version = "0.4", optional = true }
 serde_yaml = { version = "0.9", optional = true }
 
 [dev-dependencies]
@@ -39,4 +37,4 @@ zip = "8.6"
 [features]
 default = []
 # Lua clipboard_sync 插件框架（引入 mlua；仅插件同步需要时开启，server 形态保持最小体积）
-plugin = ["dep:xime-plugin", "dep:serde_yaml"]
+plugin = ["dep:xime-plugin", "dep:serde_yaml", "dep:sha2", "dep:hex"]

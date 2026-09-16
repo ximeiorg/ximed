@@ -819,7 +819,6 @@ dependencies = [
  "config",
  "futures-util",
  "hex",
- "hmac 0.12.1",
  "http",
  "reqwest",
  "serde",

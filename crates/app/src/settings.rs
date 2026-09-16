@@ -21,8 +21,8 @@ pub enum SyncMode {
 /// 应用级设置。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppSettings {
-    /// 同步适配器：server（默认）/ webdav / s3。
-    /// 非 server 时走直连（绕过 ximed server），mode/remote_* 字段被忽略。
+    /// 同步适配器：server（默认）/ plugin。
+    /// 非 server 时走插件通道（绕过本机 ximed server），mode/remote_* 字段被忽略。
     #[serde(default)]
     pub adapter: AdapterKind,
     #[serde(default)]
@@ -36,33 +36,6 @@ pub struct AppSettings {
     /// 远程服务器密码（敏感项明文落盘；desktop 单机场景可接受）。
     #[serde(default)]
     pub remote_password: Option<String>,
-    /// WebDAV 直连：服务基础地址（如 `https://dav.example.com`）。
-    #[serde(default)]
-    pub webdav_url: String,
-    /// WebDAV 直连：同步子目录（如 `xime`，可空；与 webdav_url 拼接）。
-    #[serde(default)]
-    pub webdav_dir: String,
-    /// WebDAV 直连：用户名。
-    #[serde(default)]
-    pub webdav_username: String,
-    /// WebDAV 直连：密码（敏感项明文落盘；desktop 单机场景可接受）。
-    #[serde(default)]
-    pub webdav_password: Option<String>,
-    /// S3 直连：端点（path-style，如 `https://s3.example.com`）。
-    #[serde(default)]
-    pub s3_endpoint: String,
-    /// S3 直连：存储桶名。
-    #[serde(default)]
-    pub s3_bucket: String,
-    /// S3 直连：区域。
-    #[serde(default = "default_s3_region")]
-    pub s3_region: String,
-    /// S3 直连：Access Key（敏感项明文落盘；desktop 单机场景可接受）。
-    #[serde(default)]
-    pub s3_access_key: Option<String>,
-    /// S3 直连：Secret Key（敏感项明文落盘；desktop 单机场景可接受）。
-    #[serde(default)]
-    pub s3_secret_key: Option<String>,
     /// 同步插件 id（adapter = plugin 时生效）。
     /// 插件配置值不存这里：存 `{config_dir}/plugins/config/<id>.yaml`（host.config 同源）。
     #[serde(default)]
@@ -70,10 +43,6 @@ pub struct AppSettings {
     /// 同步设置（定义在 client crate，app → client 依赖方向）。
     #[serde(default)]
     pub sync: SyncSettings,
-}
-
-fn default_s3_region() -> String {
-    "us-east-1".to_string()
 }
 
 impl Default for AppSettings {
@@ -84,15 +53,6 @@ impl Default for AppSettings {
             remote_url: String::new(),
             remote_username: String::new(),
             remote_password: None,
-            webdav_url: String::new(),
-            webdav_dir: String::new(),
-            webdav_username: String::new(),
-            webdav_password: None,
-            s3_endpoint: String::new(),
-            s3_bucket: String::new(),
-            s3_region: default_s3_region(),
-            s3_access_key: None,
-            s3_secret_key: None,
             plugin_id: String::new(),
             sync: SyncSettings::default(),
         }
@@ -137,20 +97,11 @@ mod tests {
     fn save_and_load_roundtrip() {
         let dir = tempdir().unwrap();
         let s = AppSettings {
-            adapter: AdapterKind::WebDav,
+            adapter: AdapterKind::Plugin,
             mode: SyncMode::Remote,
             remote_url: "https://example.com:8443".to_string(),
             remote_username: "alice".to_string(),
             remote_password: Some("secret".to_string()),
-            webdav_url: "https://dav.example.com".to_string(),
-            webdav_dir: "xime".to_string(),
-            webdav_username: "dav-user".to_string(),
-            webdav_password: Some("dav-secret".to_string()),
-            s3_endpoint: "https://s3.example.com".to_string(),
-            s3_bucket: "bucket".to_string(),
-            s3_region: "us-west-2".to_string(),
-            s3_access_key: Some("AKIA".to_string()),
-            s3_secret_key: Some("secret".to_string()),
             plugin_id: "com.example.sync".to_string(),
             sync: SyncSettings {
                 switch_on: true,
@@ -196,6 +147,5 @@ mod tests {
     fn default_adapter_is_server() {
         let s = AppSettings::default();
         assert_eq!(s.adapter, AdapterKind::Server);
-        assert_eq!(s.s3_region, "us-east-1");
     }
 }

@@ -58,10 +58,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 已配置（配置文件 password / 环境变量）则直接复用。
     let server_pw = server_password(&mut settings);
 
-    // desktop 形态：client 连接目标由设置决定（适配器注入：server/webdav/s3）。
+    // desktop 形态：client 连接目标由设置决定（适配器注入：server/plugin）。
     apply_client_adapter(&app_settings, &mut client_cfg, &settings, &server_pw);
     // server 适配器且本地模式：密码跟随本地 server 的认证密码（apply_client_adapter 已注入）。
-    // 远程模式或直连模式：client_cfg.password 保持各自来源。
+    // 插件模式：client_cfg.password 保持各自来源。
 
     // 日志级别取 server 配置
     xime_sync_server::init_tracing(&settings.server().log_level);
@@ -75,7 +75,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ui_tx = tx.clone();
     let ui_cmd_tx = cmd_tx.clone();
     // desktop 模式：server 在本地，可启停；配置目录为当前工作目录。
-    // 直连适配器（webdav/s3）不依赖本地 server，但本地 server 仍可手动启停，
+    // 插件适配器不依赖本地 server，但本地 server 仍可手动启停，
     // 供其他设备经 server 通道访问；因此本地 server 控制区始终可用。
     let local_server = true;
 
@@ -183,7 +183,7 @@ fn local_server_url(settings: &xime_sync_server::config::Settings) -> String {
 /// 按应用设置更新 client 连接配置（适配器注入）。
 ///
 /// - server 适配器：本地/远程模式连接 ximed server，密码复用 server 密码。
-/// - webdav / s3 适配器：直连远端存储，凭据优先环境变量，其次设置面板明文。
+/// - plugin 适配器：Lua clipboard_sync 插件通道，插件配置由插件自身管理。
 fn apply_client_adapter(
     app_settings: &AppSettings,
     client_cfg: &mut ClientConfig,
@@ -216,22 +216,6 @@ fn apply_client_adapter(
                     }
                 }
             }
-        }
-        AdapterKind::WebDav => {
-            client_cfg.adapter = AdapterKind::WebDav;
-            client_cfg.webdav_url = app_settings.webdav_url.clone();
-            client_cfg.webdav_dir = app_settings.webdav_dir.clone();
-            client_cfg.webdav_username = app_settings.webdav_username.clone();
-            // 凭据优先环境变量；设置面板明文直接注入字段（getter 兜底）
-            client_cfg.webdav_password = app_settings.webdav_password.clone();
-        }
-        AdapterKind::S3 => {
-            client_cfg.adapter = AdapterKind::S3;
-            client_cfg.s3_endpoint = app_settings.s3_endpoint.clone();
-            client_cfg.s3_bucket = app_settings.s3_bucket.clone();
-            client_cfg.s3_region = app_settings.s3_region.clone();
-            client_cfg.s3_access_key = app_settings.s3_access_key.clone();
-            client_cfg.s3_secret_key = app_settings.s3_secret_key.clone();
         }
         AdapterKind::Plugin => {
             client_cfg.adapter = AdapterKind::Plugin;
@@ -495,15 +479,6 @@ async fn desktop_control_loop(
                         remote_url,
                         remote_username,
                         remote_password,
-                        webdav_url,
-                        webdav_dir,
-                        webdav_username,
-                        webdav_password,
-                        s3_endpoint,
-                        s3_bucket,
-                        s3_region,
-                        s3_access_key,
-                        s3_secret_key,
                         plugin_id,
                         plugin_values,
                         sync,
@@ -517,27 +492,6 @@ async fn desktop_control_loop(
                             None
                         } else {
                             Some(remote_password.clone())
-                        },
-                        webdav_url: webdav_url.clone(),
-                        webdav_dir: webdav_dir.clone(),
-                        webdav_username: webdav_username.clone(),
-                        webdav_password: if webdav_password.is_empty() {
-                            None
-                        } else {
-                            Some(webdav_password.clone())
-                        },
-                        s3_endpoint: s3_endpoint.clone(),
-                        s3_bucket: s3_bucket.clone(),
-                        s3_region: s3_region.clone(),
-                        s3_access_key: if s3_access_key.is_empty() {
-                            None
-                        } else {
-                            Some(s3_access_key.clone())
-                        },
-                        s3_secret_key: if s3_secret_key.is_empty() {
-                            None
-                        } else {
-                            Some(s3_secret_key.clone())
                         },
                         plugin_id: plugin_id.clone(),
                         sync,

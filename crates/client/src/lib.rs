@@ -5,7 +5,6 @@
 
 pub mod clipboard;
 pub mod config;
-pub mod direct;
 pub mod history;
 pub mod history_store;
 #[cfg(feature = "plugin")]
