@@ -4,6 +4,10 @@
 //! [`HttpTransport`] 走 HTTP 轮询兜底（PUT 上传 / GET 拉取 + If-None-Match）。
 //! 引擎只依赖 [`Transport`] trait，便于测试 mock。
 
+// async-trait 生成的 `Pin<Box<dyn Future>>` 自带 `#[must_use]`；clippy 1.99 的
+// `double_must_use` 会把宏生成代码误报成重复属性。只在本模块放行。
+#![allow(clippy::double_must_use)]
+
 use std::time::Duration;
 
 use async_trait::async_trait;
