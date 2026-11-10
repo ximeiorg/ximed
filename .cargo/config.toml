@@ -11,3 +11,4 @@ xime-sync-server = { path = "../libximecore/crates/xime-sync-server" }
 # patch 必须打在 libximep2p 这个源上，否则 git 依赖仍会去拉远端。
 [patch."https://github.com/ximeiorg/libximep2p"]
 xime-sync-domain = { path = "../libximep2p/crates/xime-sync-domain" }
+xime-p2p = { path = "../libximep2p/crates/xime-p2p" }

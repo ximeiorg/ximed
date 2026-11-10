@@ -1,15 +1,20 @@
 # PROGRESS
 
-> 更新：2026-11-10 · 阶段：局域网 P2P 接入（P0 依赖迁移完成；P1 设备层待做）
+> 更新：2026-11-10 · 阶段：局域网 P2P 接入（P0 依赖迁移、P1 设备层完成；P2 传输适配待做）
 
 ## 当前状态
 
-- **P0 依赖迁移（本次）**：domain 从 libximecore 改到 libximep2p（pin `b19ecde`，与
-  libximecore / XimeYi 同源，避免两个 `Profile` 类型）；`.cargo/config.toml` 拆成两段
-  patch；xime-plugin 临时 pin `bdaff98`（mlua 时代最后 rev，上游已迁 quickjs）；
+- **P1 设备层（本次）**：新增 `client/src/p2p.rs`（feature `p2p`，默认关）——节点进程级
+  单例（`OnceLock<Mutex<Option<Node>>>`）+ 数据目录 `<base>/p2p/{identity.bin,peers.json}`
+  + 连接态（由 `Event::Peer` 维护，供 UI 与 push 判定）+ 已配对设备读取（表损坏报错、
+  不回落空表）。4 个单测覆盖幂等启动/端口可读/投递不阻塞/设备表语义；三种 feature
+  组合 check 全绿 + clippy 干净（详见决策 15）
+- **P0 依赖迁移（上次，已提交 fdf929a）**：domain 从 libximecore 改到 libximep2p（pin
+  `b19ecde`，与 libximecore / XimeYi 同源，避免两个 `Profile` 类型）；`.cargo/config.toml`
+  拆成两段 patch；xime-plugin 临时 pin `bdaff98`（mlua 时代最后 rev，上游已迁 quickjs）；
   client `config` 下限抬到 0.15.27。仓库恢复可构建：`cargo check --workspace`（默认
   与 `--no-default-features`）双绿、`cargo test --workspace` 50 项全过、fmt 干净
-- **同步模型收敛（上次）**：按决策 13，删除三套 WebDAV 实现中的两套——server 端 `xime-sync-store` WebDAV 存储后端（webdav feature/WebDavStorage/build_storage 工厂，server 直用 LocalStorage，`[storage]` 配置节删除）、client 直连 WebDAV/S3 适配器（`AdapterKind::{WebDav,S3}`/`direct` 模块/SigV4/4 个 TCP mock 端到端测试）；`hmac` 依赖删除，`sha2/hex` 改为 plugin feature 可选（仅商店校验）。保留两条路径：默认 server（本机/远端 hub）与插件（云端直达，商店承载）。两个仓库均已全绿
+- **同步模型收敛（更早）**：按决策 13，删除三套 WebDAV 实现中的两套——server 端 `xime-sync-store` WebDAV 存储后端（webdav feature/WebDavStorage/build_storage 工厂，server 直用 LocalStorage，`[storage]` 配置节删除）、client 直连 WebDAV/S3 适配器（`AdapterKind::{WebDav,S3}`/`direct` 模块/SigV4/4 个 TCP mock 端到端测试）；`hmac` 依赖删除，`sha2/hex` 改为 plugin feature 可选（仅商店校验）。保留两条路径：默认 server（本机/远端 hub）与插件（云端直达，商店承载）
 - **上游契约迁移（更早，已提交 d9a46fa）**：schema 由插件 Lua `getSettingsSchema()` 运行时返回（上游删除 `PluginManifest.config_schema` 与 `has_fn`），ximed 侧 `config_fields`/`test_connection` 适配完成
 - **同步插件框架**：复用 libximecore `xime-plugin`（.xipk 安装/Lua 沙箱/clipboard_sync 契约），ximed 侧补齐 schema 解释器、SyncPluginManager、插件商店索引
 - **同步独立菜单**：侧栏「同步」页 = 同步方式（插件单选激活 + schema 动态表单 + 测试连接 + 恢复默认）+ 同步开关卡片 + 插件商店
@@ -17,24 +22,23 @@
 
 ## 下一步
 
-1. **P1 设备层**：`client/src/p2p.rs`（feature `p2p`）——`device_link` 进程级单例
-   （`OnceLock<Mutex<Option<Node>>>`，照 XimeYi `device_link.rs`）+ 数据目录
-   `{data_dir}/p2p/{identity.bin,peers.json}`。注意 `Node::start`/`wait_event` 会阻塞，
-   必须走 `spawn_blocking` 或独立线程，且单例永不 drop（`Drop` 会 `shutdown_timeout` 阻塞）
-2. **P2 传输适配**：`AdapterKind::P2p` + `P2pTransport`（push→`set_clipboard`、
-   pull→`Ok(None)`、next_event→`wait_event`）+ 同步页「局域网直连」选项；用
-   `Event::Peer{connected}` 维护连接态，无对端时 push 返错复用引擎退避
-3. **P3 配对 UI**：`Panel::Device` + 侧栏「设备」页（显示码/输入码/已配对设备表），
+1. **P2 传输适配**：`AdapterKind::P2p` + `P2pTransport`（`push`→`set_clipboard`、
+   `pull`→`Ok(None)`、`next_event`→`p2p::wait_event` 走 `spawn_blocking`）+ 同步页
+   「局域网直连」选项；无对端时 `push` 返 `Err` 复用引擎退避，避免 UI 假在线。
+   `make_transport` 里 `ensure()` 必须在 `spawn_blocking`/独立线程里调（`Node::start`
+   `block_on`，异步上下文会 panic）
+2. **P3 配对 UI**：`Panel::Device` + 侧栏「设备」页（显示码/输入码/已配对设备表），
    线程模型照 `xime-setup/src/pages/pair.rs`（会话号递增丢弃迟到事件）。**已知坑**：
    `Watcher::bind` 无 `SO_REUSEADDR`，Node 常驻时 `join()` 绑不上 UDP 47822 → 配对前
    暂停节点或只走 `join_at` 手动地址
-4. 上游登记两项：xime-plugin 迁移 quickjs 契约（解开 `bdaff98` pin）、`Watcher` 加
+3. 上游登记两项：xime-plugin 迁移 quickjs 契约（解开 `bdaff98` pin）、`Watcher` 加
    `SO_REUSEADDR`
-5. GUI 手工验证：插件同步端到端（见「待办」）
+4. GUI 手工验证：插件同步端到端（见「待办」）
 
 ## 已完成
 
-- [x] **P0 局域网 P2P 依赖迁移（本次）**：domain 迁 libximep2p（pin `b19ecde`）+ patch 拆段 + xime-plugin pin `bdaff98` + config 下限 0.15.27；两种构建形态 check 双绿、50 项测试全过、fmt 干净（详见决策 14）
+- [x] **P1 局域网 P2P 设备层（本次）**：`client/src/p2p.rs` 节点单例 + 数据目录 + 连接态 + 已配对设备读取；feature `p2p` 默认关；`cargo test -p client --features p2p` 4 项通过（详见决策 15）
+- [x] **P0 局域网 P2P 依赖迁移（上次，fdf929a）**：domain 迁 libximep2p（pin `b19ecde`）+ patch 拆段 + xime-plugin pin `bdaff98` + config 下限 0.15.27；两种构建形态 check 双绿、50 项测试全过、fmt 干净（详见决策 14）
 - [x] **同步模型收敛（上次）**：server 只保留 local 后端与默认 hub/官方协议定位；client 只保留 Server/Plugin 两种适配器；删除 server 端 WebDAV 存储后端、client 直连 WebDAV/S3（含 SigV4）与 store_factory 装配层；`[storage]` 配置节与相关环境变量移除；libximecore 仓库级 reqwest 依赖删除；两仓库 cargo check/test/clippy/fmt 全绿（详见决策 13）
 - [x] **上游契约迁移（上次）**：schema 运行时化（getSettingsSchema），按钮 action = key，required 透传插件声明
 - [x] **同步插件框架（此前）**：plugin 模块（Lua↔Transport 桥接/registry/index）、`AdapterKind::Plugin` feature 门控分派、desktop/UI 接线
@@ -44,7 +48,7 @@
 
 ## 待办（后续功能点）
 
-- [ ] P1~P3 局域网 P2P 接入（见「下一步」1~3）
+- [ ] P2~P3 局域网 P2P 接入（传输适配 + 配对 UI，见「下一步」1~2）
 - [ ] 上游 xime-plugin 迁移 quickjs 契约后放开 `bdaff98` pin
 - [ ] **许可证待拍板**：接入 `xime-p2p`（GPL-3.0-or-later）后本仓需整体转 GPL
 - [ ] GUI 手工端到端验证插件同步

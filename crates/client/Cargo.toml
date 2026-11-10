@@ -9,6 +9,8 @@ async-trait = "0.1"
 xime-sync-domain.workspace = true
 xime-sync-store = { workspace = true, features = ["history"] }
 xime-plugin = { workspace = true, optional = true }
+# 局域网 P2P 传输（feature p2p）：局域网直连，无第三方服务器
+xime-p2p = { workspace = true, optional = true }
 tokio = { version = "1", features = ["time", "macros", "rt", "sync"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
@@ -40,3 +42,6 @@ zip = "8.6"
 default = []
 # Lua clipboard_sync 插件框架（引入 mlua；仅插件同步需要时开启，server 形态保持最小体积）
 plugin = ["dep:xime-plugin", "dep:serde_yaml", "dep:sha2", "dep:hex"]
+# 局域网直连通道（xime-p2p）：桌面形态自带的第三种同步方式，无第三方服务器。
+# 默认关：server 形态（树莓派等低性能设备）不引入 xime-p2p 的密码学依赖与网络栈。
+p2p = ["dep:xime-p2p"]

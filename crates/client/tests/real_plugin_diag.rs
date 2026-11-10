@@ -2,6 +2,10 @@
 //!
 //! 依赖 /tmp/ximed-sync.xipk（手动下载的真实插件包），仅本地诊断用。
 
+// 整个文件依赖 `plugin` feature（`client::plugin` 被它门控），
+// 否则 `cargo test --features p2p` 等只开部分特性的组合会编译失败。
+#![cfg(feature = "plugin")]
+
 use std::io::{Read, Write};
 use std::net::TcpListener;
 

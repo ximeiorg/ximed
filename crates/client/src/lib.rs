@@ -7,6 +7,9 @@ pub mod clipboard;
 pub mod config;
 pub mod history;
 pub mod history_store;
+/// 局域网 P2P 设备层（feature `p2p`）：节点与配对身份的进程级生命周期。
+#[cfg(feature = "p2p")]
+pub mod p2p;
 #[cfg(feature = "plugin")]
 pub mod plugin;
 pub mod settings;

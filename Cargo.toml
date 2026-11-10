@@ -23,6 +23,9 @@ xime-sync-server = { git = "https://github.com/ximeiorg/libximecore.git", packag
 # quickjs-rusty（Lua → JS 契约），client 的插件适配层还没迁移，跟 HEAD 会 49 个编译错误。
 # 迁移 JS 契约是独立功能点，不在本次改动范围内。
 xime-plugin = { git = "https://github.com/ximeiorg/libximecore.git", rev = "bdaff989998cabb8f555943b8954538922dc2caf", package = "xime-plugin" }
+# 跨设备剪贴板 P2P（局域网直连，无第三方服务器）。与 domain 同仓同 rev：
+# 它 re-export 的 `Profile` 必须和本仓用的是同一个类型（见上方 domain 注释）。
+xime-p2p = { git = "https://github.com/ximeiorg/libximep2p.git", rev = "b19ecdec2c0336669897cafe909541906024dc29" }
 client = { path = "crates/client" }
 app = { path = "crates/app" }
 

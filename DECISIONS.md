@@ -107,3 +107,24 @@ hub（手机 Xime IME 走 HTTP 事件驱动连它）与官方远端协议端点�
   MIT），libximep2p 的 `xime-p2p` 同为 GPL。ximed 目前是 MIT——接入 p2p 后整体分发
   必须转 GPL-3.0-or-later（与 XimeYi / Android 一致），尚未改动 LICENSE。
 
+## 15. 局域网直连：节点归设备层单例，feature 默认关（2026-11-10）
+
+P2P 作为第三种同步通道接入（协议文档 §2.2 的定位），与 server / 插件互斥选用。分层：
+
+- **配对是认证，同步是功能**（照 XimeYi `device_link.rs`）：`Node`（监听 / 发现 /
+  会话）属于设备层，剪贴板同步只是它的订阅者。以后加词库、主题同步时节点不重建。
+- **节点必须是进程级单例**（`OnceLock<Mutex<Option<Node>>>`，`client/src/p2p.rs`）：
+  desktop 每次「保存并应用」都会 abort 引擎任务再重建 `SyncEngine`
+  （`stop_client_services` / `spawn_client_services`）。节点若跟着引擎走，改一次设置
+  就重建一次节点——重新抢端口、丢掉已建连接，表现为「点了保存，同步断一会」。
+- **线程约束写进模块文档**：`Node::start` 与 `wait_event` 内部 `block_on`，异步上下文
+  直接调用会 panic，必须 `spawn_blocking` 或独立线程；单例在进程存活期间不 drop
+  （`Drop` 会 `shutdown_timeout` 阻塞）。
+- **数据目录固定 `<base>/p2p`**（`identity.bin` + `peers.json`）：配对入口与常驻节点
+  必须同一目录，否则是「设置里配对成功、同步仍认为未配对」且界面看不出异常。
+- **配对表读失败必须报错，不回落空表**：表里是用户已建立的信任关系，静默清空等于把
+  所有设备退回未配对，而界面只会显示「暂无已配对设备」。
+- **feature `p2p` 默认关**：server 形态（树莓派等低性能设备）不引入 xime-p2p 的密码学
+  依赖（snow / ed25519 / x25519 / chacha20poly1305 / spake2）与网络栈；桌面形态在
+  P2 接线时再并入 `tray`。
+
