@@ -13,6 +13,8 @@
   `assets/icon.png`（macOS 22px、其余 32px），退出前 `shutdown()` 主动 drop。
   已验证：KWin 关窗 → 窗口销毁且进程存活；托盘显示 → 新窗口；托盘隐藏 → 销毁；
   托盘退出 → 进程结束（SNI 项同步消失）。
+- **Release 数字 tag 触发（本次）**：`release.yml` 的 tag 过滤增加 `0.*`，`0.2.0`
+  这类数字 tag 也能触发三平台安装包发布；`0.2.0` 已重新打签并 force push。
 - **CI macOS runner 迁移（本次）**：GitHub 已于 2026-11-02 退役 `macos-14` 镜像；
   `ci.yml` 的测试矩阵改用 `macos-15`（arm64），`build-packages.yml` 的 macOS
   arm64/x86_64 分别改用 `macos-15` / `macos-15-intel`。
@@ -93,6 +95,7 @@
 
 ## 已完成
 
+- [x] **Release 数字 tag 触发（本次）**：`release.yml` 支持 `v*` + `0.*`，`0.2.0` 重新 force push
 - [x] **CI macOS runner 迁移（本次）**：`macos-14` → `macos-15` / `macos-15-intel`
 - [x] **CI 依赖源修复（本次）**：移除误跟踪的 `.cargo/config.toml`，Cargo.lock 恢复 git source；CI 无 patch 跑通 clippy/test
 - [x] **自动构建收敛（本次）**：三平台 desktop-only；Linux deb/rpm/AppImage；删除 server/ARM 目标
