@@ -91,3 +91,17 @@ tempfile = "3"
 
 [build-dependencies]
 embed-resource = "3.0"
+
+# Linux RPM 打包（cargo-generate-rpm）：deb/AppImage 仍由 cargo-packager 生成。
+[package.metadata.generate-rpm]
+name = "ximed"
+summary = "ximed input method data synchronization service"
+url = "https://github.com/ximeiorg/ximed"
+license = "GPL-3.0-or-later"
+vendor = "ximeiorg"
+assets = [
+    { source = "target/release/ximed-desktop", dest = "/usr/bin/ximed-desktop", mode = "755" },
+    { source = "deploy/ximed-desktop.desktop", dest = "/usr/share/applications/ximed-desktop.desktop", mode = "644" },
+    { source = "crates/app/assets/icon.png", dest = "/usr/share/icons/hicolor/1024x1024/apps/ximed-desktop.png", mode = "644" },
+    { source = "LICENSE", dest = "/usr/share/doc/ximed/LICENSE", mode = "644", doc = true },
+]

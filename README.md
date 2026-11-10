@@ -16,7 +16,7 @@
 - **设备配对**：局域网设备用 6 位码配对，建立信任后直连，无需第三方服务器。
 - **系统托盘常驻**：Windows / Linux / macOS 关窗不退出，从托盘恢复窗口或退出。
 - **低占用**：单进程桌面形态，Rust 实现，资源占用低。
-- **跨平台**：Windows / Linux / macOS 同一套代码，CI 构建三平台桌面安装包。
+- **跨平台**：Windows / Linux / macOS 同一套代码。CI 产物：Windows NSIS + 便携 zip、Linux deb / rpm / AppImage、macOS dmg。
 
 ## 形态
 

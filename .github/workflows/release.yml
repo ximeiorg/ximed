@@ -1,7 +1,7 @@
-# ximed release 构建：推送 v* tag 时构建 server + desktop 各平台包并发布 GitHub Release。
+# ximed release 构建：推送 v* tag 时构建三平台桌面安装包并发布 GitHub Release。
 #
 # 实际构建矩阵见 build-packages.yml（可复用工作流）。
-# 产物：ximed-server-<target>.*、ximed-desktop-<target>.<格式>
+# 产物：ximed-desktop-<target>.<格式>（Windows NSIS/zip、Linux deb/rpm/AppImage、macOS dmg）
 name: release
 
 on:

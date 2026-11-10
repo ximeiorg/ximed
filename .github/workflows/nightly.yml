@@ -1,4 +1,4 @@
-# ximed nightly 构建：每日构建 server + desktop 各平台包，产物文件名带构建日期，
+# ximed nightly 构建：每日构建三平台桌面安装包，产物文件名带构建日期，
 # 并更新到滚动的 nightly GitHub Release（不新建版本 release）。
 #
 # 实际构建矩阵见 build-packages.yml（可复用工作流）。

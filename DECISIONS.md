@@ -320,3 +320,25 @@ README、关于页和路线图按这个口径描述，不再把 HTTP 回退或 s
 用于旧配置兜底与后续恢复；它们不再作为对外承诺。若产品决定彻底禁用，需要改默认
 `channels`、停止 server 自动拉起，并去掉概览里的「内置回退」行——那是独立的行为改动，
 不在本次文档修正范围内。恢复时删除本决策并同步 README / 关于页。
+
+
+## 25. 自动构建收敛为三平台桌面包，Linux 增加 rpm（2026-11-10）
+
+按决策 24 的产品口径，`build-packages.yml` 不再构建 server / client，只出三平台桌面安装包：
+
+- **矩阵**：Windows x86_64、Linux x86_64、macOS arm64 + x86_64（macOS 两个架构）；
+  删除 Linux aarch64/armv7 musl server 目标。
+- **Linux 产物**：`.deb`、`.AppImage` 由 cargo-packager 生成；`.rpm` 由
+  `cargo-generate-rpm` 生成，配置在 `crates/app/Cargo.toml` 的
+  `[package.metadata.generate-rpm]`（binary、desktop entry、图标、LICENSE）。
+- **为什么不用 nfpm / cargo-bundle / cargo-rpm**：
+  - `cargo-bundle` 0.12 的 rpm 实现是 `unimplemented!()`，不能生成 rpm；
+  - `cargo-rpm` 0.8 较旧且依赖 `rpmbuild`；
+  - `cargo-generate-rpm` 是维护中的纯 Rust 实现，不需要 rpmbuild，和 Cargo metadata
+    同源；
+  - cargo-deb 能生成 deb，但 cargo-packager 已经同时覆盖 deb/AppImage，再引入
+    cargo-deb 会增加一套重复配置；后续如果要把 deb 也改成纯 Cargo 工具，可再评估。
+- **桌面入口**：新增 `deploy/ximed-desktop.desktop`，RPM 与后续其它 Linux 包装共用；
+  AppImage/deb 仍由 cargo-packager 自动生成 desktop/icon。
+- 构建仍使用 `actions-rust-cross` 产出的 `target/<target>/release/ximed-desktop`，
+  `cargo-generate-rpm` 只打包不重编。

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ximed
+Comment=输入法数据同步
+Exec=ximed-desktop
+Icon=ximed-desktop
+Terminal=false
+Categories=Utility;
+Keywords=clipboard;sync;
+StartupWMClass=ximed-desktop

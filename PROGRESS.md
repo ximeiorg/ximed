@@ -13,6 +13,10 @@
   `assets/icon.png`（macOS 22px、其余 32px），退出前 `shutdown()` 主动 drop。
   已验证：KWin 关窗 → 窗口销毁且进程存活；托盘显示 → 新窗口；托盘隐藏 → 销毁；
   托盘退出 → 进程结束（SNI 项同步消失）。
+- **自动构建调整（本次）**：`build-packages.yml` 只保留三平台桌面包（Windows x64 /
+  Linux x64 / macOS arm64+x64），删除 server 与 Linux ARM/musl 目标；Linux 产物改为
+  deb + AppImage + rpm，rpm 用 `cargo-generate-rpm` 生成（配置在
+  `crates/app/Cargo.toml`），并新增 `deploy/ximed-desktop.desktop` 供 RPM 安装。
 - **README + 截图（本次）**：新增 README（功能介绍、形态、构建/配置、架构、路线图、
   GPL 许可），并嵌入 `docs/images/overview.png` 与 `docs/images/about.png` 两张界面截图。
   按当前产品口径明确：只支持桌面形态的 P2P / WebDAV；内置 HTTP 通道与独立 server
@@ -81,6 +85,7 @@
 
 ## 已完成
 
+- [x] **自动构建收敛（本次）**：三平台 desktop-only；Linux deb/rpm/AppImage；删除 server/ARM 目标
 - [x] **README + 界面截图（本次）**：概览/关于页截图入库，README 覆盖功能、构建、配置、架构、许可与路线图
 - [x] **许可证转 GPL-3.0-or-later（本次，决策 20）**：LICENSE 全文 + workspace license + About 页 + 文档一致
 - [x] **关于页简化（本次，决策 23）**：侧栏普通入口 + 三张卡（hero / 应用信息 / 开源许可），依赖表收敛为 Cargo.lock 指向

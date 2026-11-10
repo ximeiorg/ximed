@@ -1,14 +1,13 @@
-# 可复用构建工作流：Windows / Linux / macOS 主流架构，出 server 与 desktop 两种包。
+# 可复用构建工作流：Windows / Linux / macOS 桌面包。
 #
-# 两种包：
-#   - server  包：ximed-server（--no-default-features，无 UI，最小体积，低性能设备/RPi）
-#   - desktop 包：ximed-desktop（默认构建，同进程 server + client + 托盘，iced 桌面 UI）
-#       Windows：NSIS 安装器 setup.exe + 便携版 zip
-#       Linux：  .deb + .AppImage
-#       macOS：  .dmg（内部含 .app）
+# 当前只构建桌面形态（ximed-desktop），不构建 server / client：
+#   Windows：NSIS 安装器 setup.exe + 便携版 zip
+#   Linux：  .deb + .rpm + .AppImage
+#   macOS：  .dmg（内部含 .app），同时出 arm64 / x86_64 两个 target
 #
-# 桌面包格式由 cargo-packager（Tauri 同源）生成，配置见 crates/app/Cargo.toml
-# 的 [package.metadata.packager]。
+# 桌面包格式：deb/AppImage/NSIS/dmg 由 cargo-packager 生成，配置见
+# crates/app/Cargo.toml 的 [package.metadata.packager]；rpm 由 cargo-generate-rpm
+# 生成，配置见同文件的 [package.metadata.generate-rpm]。
 #
 # 由调用方触发：
 #   - nightly.yml  每日 02:00 UTC / 手动（publish=nightly：产物更新到滚动 nightly release）
@@ -24,7 +23,7 @@ on:
         type: string
         default: "none"
       include-date:
-        description: "产物文件名追加构建日期（nightly 用，如 ximed-server-<target>-2026-08-06.zip）"
+        description: "产物文件名追加构建日期（nightly 用，如 ximed-desktop-<target>-2026-08-06.deb）"
         required: false
         type: boolean
         default: false
@@ -45,28 +44,16 @@ jobs:
         include:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            packages: "server desktop"
             cache: true
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            packages: "server desktop"
             apt: true
             cache: true
-          # Linux ARM：musl 静态链接，仅 server（桌面 UI 在 ARM musl 上不可构建）
-          # actions-rust-cross 会自动用 cross 构建非 x86 目标
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-musl
-            packages: "server"
-          - os: ubuntu-latest
-            target: armv7-unknown-linux-musleabihf
-            packages: "server"
           - os: macos-14
             target: aarch64-apple-darwin
-            packages: "server desktop"
             cache: true
           - os: macos-14
             target: x86_64-apple-darwin
-            packages: "server desktop"
             cache: true
 
     steps:
@@ -93,16 +80,7 @@ jobs:
         if: matrix.cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Build server
-        if: contains(matrix.packages, 'server')
-        uses: houseabsolute/actions-rust-cross@v1
-        with:
-          command: build
-          target: ${{ matrix.target }}
-          args: --release --locked --no-default-features --bin ximed-server
-
       - name: Build desktop
-        if: contains(matrix.packages, 'desktop')
         uses: houseabsolute/actions-rust-cross@v1
         with:
           command: build
@@ -110,14 +88,16 @@ jobs:
           args: --release --locked --bin ximed-desktop
 
       - name: Install cargo-packager
-        if: contains(matrix.packages, 'desktop')
         run: cargo install cargo-packager --locked
 
-      - name: Package archives
+      - name: Install cargo-generate-rpm (Linux rpm packaging)
+        if: matrix.apt
+        run: cargo install cargo-generate-rpm --version 0.21.1 --locked
+
+      - name: Package desktop
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
-          PACKAGES: ${{ matrix.packages }}
           RUNNER_OS: ${{ runner.os }}
           INCLUDE_DATE: ${{ inputs.include-date }}
         run: |
@@ -127,52 +107,33 @@ jobs:
           if [ "$INCLUDE_DATE" = "true" ]; then
             DATE_SUFFIX="-$(date -u +%Y-%m-%d)"
           fi
-          for pkg in $PACKAGES; do
-            case "$pkg" in
-              server)
-                # 裸二进制归档（无 UI，低性能设备直接部署）
-                bin="ximed-server"
-                [ "$RUNNER_OS" = "Windows" ] && bin="${bin}.exe"
-                stage="stage/server"
-                rm -rf "$stage"
-                mkdir -p "$stage"
-                cp "target/${TARGET}/release/${bin}" "$stage/"
-                cp LICENSE "$stage/"
-                cp deploy/ximed.service "$stage/"
-                if [ "$RUNNER_OS" = "Windows" ]; then
-                  powershell -NoProfile -Command \
-                    "Compress-Archive -Path 'stage/server/*' -DestinationPath 'dist/ximed-server-${TARGET}${DATE_SUFFIX}.zip' -Force"
-                else
-                  tar -czf "dist/ximed-server-${TARGET}${DATE_SUFFIX}.tar.gz" -C "$stage" .
-                fi
-                ;;
-              desktop)
-                # cargo-packager 生成桌面包格式（配置见 crates/app/Cargo.toml）
-                case "$RUNNER_OS" in
-                  Linux)   FORMATS="deb,appimage" ;;
-                  macOS)   FORMATS="app,dmg" ;;
-                  Windows) FORMATS="nsis" ;;
-                esac
-                cargo packager --release --target "$TARGET" --formats "$FORMATS" \
-                  --out-dir "$GITHUB_WORKSPACE/dist"
-                case "$RUNNER_OS" in
-                  Linux)
-                    mv dist/*.deb "dist/ximed-desktop-${TARGET}${DATE_SUFFIX}.deb"
-                    mv dist/*.AppImage "dist/ximed-desktop-${TARGET}${DATE_SUFFIX}.AppImage"
-                    ;;
-                  macOS)
-                    mv dist/*.dmg "dist/ximed-desktop-${TARGET}${DATE_SUFFIX}.dmg"
-                    rm -rf dist/*.app
-                    ;;
-                  Windows)
-                    mv dist/*-setup.exe "dist/ximed-desktop-${TARGET}${DATE_SUFFIX}-setup.exe"
-                    powershell -NoProfile -Command \
-                      "Compress-Archive -Path 'target/${TARGET}/release/ximed-desktop.exe','LICENSE' -DestinationPath 'dist/ximed-desktop-${TARGET}${DATE_SUFFIX}-portable.zip' -Force"
-                    ;;
-                esac
-                ;;
-            esac
-          done
+
+          case "$RUNNER_OS" in
+            Linux)
+              cargo packager --release --target "$TARGET" --formats deb,appimage \
+                --out-dir "$GITHUB_WORKSPACE/dist"
+              mv dist/*.deb "dist/ximed-desktop-${TARGET}${DATE_SUFFIX}.deb"
+              mv dist/*.AppImage "dist/ximed-desktop-${TARGET}${DATE_SUFFIX}.AppImage"
+
+              cargo generate-rpm -p crates/app --target "$TARGET" \
+                --output "dist/ximed-desktop-${TARGET}${DATE_SUFFIX}.rpm"
+              test -f "dist/ximed-desktop-${TARGET}${DATE_SUFFIX}.rpm"
+              ;;
+            macOS)
+              cargo packager --release --target "$TARGET" --formats app,dmg \
+                --out-dir "$GITHUB_WORKSPACE/dist"
+              mv dist/*.dmg "dist/ximed-desktop-${TARGET}${DATE_SUFFIX}.dmg"
+              rm -rf dist/*.app
+              ;;
+            Windows)
+              cargo packager --release --target "$TARGET" --formats nsis \
+                --out-dir "$GITHUB_WORKSPACE/dist"
+              mv dist/*-setup.exe "dist/ximed-desktop-${TARGET}${DATE_SUFFIX}-setup.exe"
+              powershell -NoProfile -Command \
+                "Compress-Archive -Path 'target/${TARGET}/release/ximed-desktop.exe','LICENSE' -DestinationPath 'dist/ximed-desktop-${TARGET}${DATE_SUFFIX}-portable.zip' -Force"
+              ;;
+          esac
+
           # 清理 cargo-packager 工具集缓存（默认落在 out-dir）
           rm -rf dist/.cargo-packager
 
