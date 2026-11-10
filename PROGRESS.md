@@ -13,6 +13,9 @@
   `assets/icon.png`（macOS 22px、其余 32px），退出前 `shutdown()` 主动 drop。
   已验证：KWin 关窗 → 窗口销毁且进程存活；托盘显示 → 新窗口；托盘隐藏 → 销毁；
   托盘退出 → 进程结束（SNI 项同步消失）。
+- **CI macOS runner 迁移（本次）**：GitHub 已于 2026-11-02 退役 `macos-14` 镜像；
+  `ci.yml` 的测试矩阵改用 `macos-15`（arm64），`build-packages.yml` 的 macOS
+  arm64/x86_64 分别改用 `macos-15` / `macos-15-intel`。
 - **CI 依赖源修复（本次）**：`.cargo/config.toml` 虽然被 .gitignore 覆盖，但历史上已被 git
   跟踪；CI checkout 后它仍存在，patch 指向不存在的 `../libximecore`，导致 clippy/test 在
   解析依赖阶段直接失败。已 `git rm --cached`，`Cargo.lock` 的 5 个上游 crate 恢复 git
@@ -90,6 +93,7 @@
 
 ## 已完成
 
+- [x] **CI macOS runner 迁移（本次）**：`macos-14` → `macos-15` / `macos-15-intel`
 - [x] **CI 依赖源修复（本次）**：移除误跟踪的 `.cargo/config.toml`，Cargo.lock 恢复 git source；CI 无 patch 跑通 clippy/test
 - [x] **自动构建收敛（本次）**：三平台 desktop-only；Linux deb/rpm/AppImage；删除 server/ARM 目标
 - [x] **README + 界面截图（本次）**：概览/关于页截图入库，README 覆盖功能、构建、配置、架构、许可与路线图
