@@ -128,3 +128,30 @@ P2P 作为第三种同步通道接入（协议文档 §2.2 的定位），与 se
   依赖（snow / ed25519 / x25519 / chacha20poly1305 / spake2）与网络栈；桌面形态在
   P2 接线时再并入 `tray`。
 
+## 16. 移除插件体系（2026-11-10，作废决策 12/13 中插件相关部分）
+
+插件（.xipk + 运行时 + 商店）整体删除，同步只保留原生通道。理由：
+
+- **主要用途已被原生通道覆盖**：插件最初是 WebDAV / S3 的唯一载体；WebDAV 转为原生、
+  局域网直连原生实现后，插件只剩长尾网盘价值，而长尾需求用一条原生通道（今天加
+  WebDAV 只花了约 150 行 + 5 个测试）比背一套运行时便宜得多。
+- **成本不对称**：插件运行时是一个 C 引擎（原 mlua，上游已换 quickjs-rusty）+ 沙箱
+  + 契约版本管理 + 商店索引。与「极低性能设备也能部署」的目标直接冲突。
+- **已实际付过一次代价**：上游把运行时从 mlua 换成 quickjs，让本仓从「能跑」变成
+  49 个编译错误，只能把 `xime-plugin` 钉在迁移前的 `bdaff98`。删除后这条 pin 债与
+  `xime-plugin` 依赖一并消失（决策 14 的临时状态解除）。
+- **生态归属不在本仓**：`.xipk` 跨端复用的价值属于 libximecore / XimeChe / XimeYi 侧。
+
+删除范围：`client/src/plugin/`（1043 行含测试）、`plugin` feature 与
+xime-plugin/serde_yaml/sha2/hex/zip 依赖、`AdapterKind`（原 Server/Plugin 二选一）、
+`AppSettings::{adapter, plugin_id}`、桌面 UI 的插件列表/动态表单/商店，
+以及 `UiMsg`/`UiCmd` 的 8 个插件消息。
+
+兼容性：
+
+- 旧配置里的 `adapter` / `plugin_id` / `plugins_dir` 字段**被 serde 忽略**（未声明为
+  `deny_unknown_fields`），解析不会失败，回落到默认的 HTTP 通道。
+- 插件通道用户的 `plugins/config/<id>.yaml` 与 `.xipk` 无法自动转成原生通道参数，
+  需在同步页重新填一次；`plugins/` 目录可留可删，代码不再读取。
+- 想写自定义传输后端时再评估扩展机制，届时用 wasm（wasmi 之类）而不是 JS/Lua 沙箱。
+

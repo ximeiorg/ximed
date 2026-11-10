@@ -5,17 +5,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// 同步适配器类型。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AdapterKind {
-    /// 连接 ximed server（默认，HTTP/WS 协议通道）。
-    #[default]
-    Server,
-    /// 同步插件（Lua clipboard_sync 插件，需 client `plugin` feature）。
-    Plugin,
-}
-
 /// WebDAV 通道设置：把当前剪贴板当作网盘上的一个 JSON 文件。
 ///
 /// 语义与 HTTP 通道一致（单值、最后写入胜出），只是载体换成用户自己的网盘：
@@ -114,15 +103,6 @@ pub struct ClientConfig {
     /// 是否启用 WS 实时通道（false 则纯 HTTP 轮询）。
     #[serde(default = "default_true")]
     pub ws_enabled: bool,
-    /// 同步适配器：server（默认）/ plugin。
-    #[serde(default)]
-    pub adapter: AdapterKind,
-    /// 同步插件根目录（adapter=plugin 时生效；`<root>/config/<id>.yaml` 为插件配置）。
-    #[serde(default)]
-    pub plugins_dir: String,
-    /// 激活的同步插件 id（adapter=plugin 时生效）。
-    #[serde(default)]
-    pub plugin_id: String,
 }
 
 impl Default for ClientConfig {
@@ -137,9 +117,6 @@ impl Default for ClientConfig {
             http_fallback_ms: default_poll_ms(),
             heartbeat_secs: default_heartbeat_secs(),
             ws_enabled: default_true(),
-            adapter: AdapterKind::default(),
-            plugins_dir: String::new(),
-            plugin_id: String::new(),
         }
     }
 }
@@ -281,30 +258,6 @@ mod tests {
         unsafe {
             std::env::remove_var("XIMED_CLIENT_PASSWORD");
         }
-    }
-
-    #[test]
-    fn direct_adapter_defaults() {
-        let cfg = ClientConfig::default();
-        assert_eq!(cfg.adapter, AdapterKind::Server);
-        assert_eq!(cfg.plugins_dir, "");
-        assert_eq!(cfg.plugin_id, "");
-    }
-
-    #[test]
-    fn plugin_adapter_deserializes_from_config_file() {
-        // 旧配置文件无 plugin 字段 → 默认；新配置可反序列化 plugin 适配器
-        let legacy: ClientConfig = serde_json::from_str(r#"{"server_url": "http://x"}"#).unwrap();
-        assert_eq!(legacy.adapter, AdapterKind::Server);
-        assert_eq!(legacy.plugins_dir, "");
-
-        let plugin: ClientConfig = serde_json::from_str(
-            r#"{"adapter": "plugin", "plugins_dir": "/cfg/plugins", "plugin_id": "com.example.sync"}"#,
-        )
-        .unwrap();
-        assert_eq!(plugin.adapter, AdapterKind::Plugin);
-        assert_eq!(plugin.plugins_dir, "/cfg/plugins");
-        assert_eq!(plugin.plugin_id, "com.example.sync");
     }
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {

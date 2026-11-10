@@ -26,12 +26,9 @@ path = "src/bin/ximed-client.rs"
 [features]
 default = ["tray"]
 # 托盘/窗口 UI（桌面形态）；server-only 构建可关掉以减小体积。
-# tray 依赖 plugin（桌面设置/插件面板管理同步插件）。
-tray = ["dep:tray-icon", "dep:muda", "dep:iced", "dep:gtk", "macos-dock-icon", "plugin"]
+tray = ["dep:tray-icon", "dep:muda", "dep:iced", "dep:gtk", "macos-dock-icon"]
 # macOS 运行时设置 Dock 图标（cargo run 裸跑时 .icns 不生效，需运行时 setApplicationIconImage:）
 macos-dock-icon = ["dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]
-# 同步插件框架（Lua clipboard_sync 插件 + 插件商店索引）
-plugin = ["client/plugin"]
 
 # cargo-packager 打包配置（CI nightly 生成 desktop 安装包）。
 # version / out-dir / binaries-dir 等由 cargo-packager 从 cargo metadata 自动填充，

@@ -8,7 +8,6 @@ license.workspace = true
 async-trait = "0.1"
 xime-sync-domain.workspace = true
 xime-sync-store = { workspace = true, features = ["history"] }
-xime-plugin = { workspace = true, optional = true }
 # 局域网 P2P 传输（feature p2p）：局域网直连，无第三方服务器
 xime-p2p = { workspace = true, optional = true }
 tokio = { version = "1", features = ["time", "macros", "rt", "sync"] }
@@ -27,21 +26,13 @@ thiserror = "2"
 # 在无剪贴板桥接（如 KDE 未运行 klipper）时读不到 Wayland 原生应用的复制内容
 arboard = { version = "3", features = ["wayland-data-control"] }
 tracing = "0.1"
-# 同步插件框架（feature plugin）：商店索引 sha256 校验 + configSchema 解析
-sha2 = { version = "0.10", optional = true }
-hex = { version = "0.4", optional = true }
-serde_yaml = { version = "0.9", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["rt", "macros", "time"] }
-# 测试打包 .xipk fixture（与 xime-plugin 同版本，避免重复编译）
-zip = "8.6"
 
 [features]
 default = []
-# Lua clipboard_sync 插件框架（引入 mlua；仅插件同步需要时开启，server 形态保持最小体积）
-plugin = ["dep:xime-plugin", "dep:serde_yaml", "dep:sha2", "dep:hex"]
-# 局域网直连通道（xime-p2p）：桌面形态自带的第三种同步方式，无第三方服务器。
+# 局域网直连通道（xime-p2p）：桌面形态自带的同步方式，无第三方服务器。
 # 默认关：server 形态（树莓派等低性能设备）不引入 xime-p2p 的密码学依赖与网络栈。
 p2p = ["dep:xime-p2p"]

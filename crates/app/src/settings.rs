@@ -4,7 +4,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use client::config::AdapterKind;
 use client::settings::SyncSettings;
 
 /// client 连接模式。
@@ -21,10 +20,6 @@ pub enum SyncMode {
 /// 应用级设置。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppSettings {
-    /// 同步适配器：server（默认）/ plugin。
-    /// 非 server 时走插件通道（绕过本机 ximed server），mode/remote_* 字段被忽略。
-    #[serde(default)]
-    pub adapter: AdapterKind,
     #[serde(default)]
     pub mode: SyncMode,
     /// 远程服务器基础地址，如 `https://example.com:8443`。
@@ -36,10 +31,6 @@ pub struct AppSettings {
     /// 远程服务器密码（敏感项明文落盘；desktop 单机场景可接受）。
     #[serde(default)]
     pub remote_password: Option<String>,
-    /// 同步插件 id（adapter = plugin 时生效）。
-    /// 插件配置值不存这里：存 `{config_dir}/plugins/config/<id>.yaml`（host.config 同源）。
-    #[serde(default)]
-    pub plugin_id: String,
     /// 同步设置（定义在 client crate，app → client 依赖方向）。
     #[serde(default)]
     pub sync: SyncSettings,
@@ -48,12 +39,10 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            adapter: AdapterKind::default(),
             mode: SyncMode::Local,
             remote_url: String::new(),
             remote_username: String::new(),
             remote_password: None,
-            plugin_id: String::new(),
             sync: SyncSettings::default(),
         }
     }
@@ -97,12 +86,10 @@ mod tests {
     fn save_and_load_roundtrip() {
         let dir = tempdir().unwrap();
         let s = AppSettings {
-            adapter: AdapterKind::Plugin,
             mode: SyncMode::Remote,
             remote_url: "https://example.com:8443".to_string(),
             remote_username: "alice".to_string(),
             remote_password: Some("secret".to_string()),
-            plugin_id: "com.example.sync".to_string(),
             sync: SyncSettings {
                 switch_on: true,
                 push_switch_on: false,
@@ -141,11 +128,5 @@ mod tests {
         assert_eq!(s.mode, SyncMode::Local);
         assert_eq!(s.sync, SyncSettings::default());
         assert!(s.sync.switch_on);
-    }
-
-    #[test]
-    fn default_adapter_is_server() {
-        let s = AppSettings::default();
-        assert_eq!(s.adapter, AdapterKind::Server);
     }
 }

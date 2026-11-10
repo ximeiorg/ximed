@@ -407,36 +407,15 @@ impl SyncEngine {
     }
 }
 
-/// 按配置构建传输通道：
-/// - server 适配器（默认）：WS 实时，关闭则 HTTP 轮询
-/// - plugin 适配器：Lua clipboard_sync 插件通道（需 `plugin` feature）
-fn make_transport(cfg: &ClientConfig, password: &str) -> Arc<dyn Transport> {
-    use crate::config::AdapterKind;
-    match cfg.adapter {
-        AdapterKind::Plugin => {
-            #[cfg(feature = "plugin")]
-            match crate::plugin::SyncPluginManager::new(&cfg.plugins_dir)
-                .make_transport(&cfg.plugin_id)
-            {
-                Ok(t) => t,
-                Err(e) => {
-                    tracing::warn!("plugin transport unavailable (id={}): {e}", cfg.plugin_id);
-                    Arc::new(crate::transport::HttpTransport::new(cfg, password))
-                }
-            }
-            #[cfg(not(feature = "plugin"))]
-            {
-                tracing::warn!("adapter=plugin requires the client 'plugin' feature");
-                Arc::new(crate::transport::HttpTransport::new(cfg, password))
-            }
-        }
-        AdapterKind::Server => {
-            if cfg.ws_enabled {
-                Arc::new(WsTransport::new(cfg, password))
-            } else {
-                Arc::new(HttpTransport::new(cfg, password))
-            }
-        }
+/// 按配置构建传输通道：WS 实时，关闭则 HTTP 轮询。
+///
+/// 通道选择（http / webdav / p2p 的优先级与降级）在 `app` 侧按
+/// [`crate::channel`] 的决策结果注入，这里只负责造出被选中的那一条。
+pub(crate) fn make_transport(cfg: &ClientConfig, password: &str) -> Arc<dyn Transport> {
+    if cfg.ws_enabled {
+        Arc::new(WsTransport::new(cfg, password))
+    } else {
+        Arc::new(HttpTransport::new(cfg, password))
     }
 }
 
