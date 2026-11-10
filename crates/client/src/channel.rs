@@ -1,8 +1,7 @@
 //! 同步通道：有序列表、健康窗口与切换决策。
 //!
-//! 三种内置通道（`http` / `webdav` / `p2p`）+ 扩展插件（任意其它 id）共用同一套
-//! 选择逻辑：**列表有序、首个优先**。语义与 XimeYi / Android 的 `channels` 一致，
-//! 三端可以互换配置。
+//! 三种内置通道（`http` / `webdav` / `p2p`）共用同一套选择逻辑：**列表有序、
+//! 首个优先**。语义与 XimeYi / Android 的 `channels` 一致，三端可以互换配置。
 //!
 //! 为什么不是「多选并行」：剪贴板是单值资源，双写会让同一条内容被推两次，远端
 //! 回写时还可能互相触发（协议文档 §2.4）。所以同一时刻只跑一条通道；「降级」靠
@@ -10,8 +9,8 @@
 //!
 //! 为什么只有 P2P 参与健康判定：P2P 有明确的连接事件（`Event::Peer`），能区分
 //! 「连着」和「没连」；而 HTTP / WebDAV 只有「本次 push 成功与否」，一次失败可能
-//! 只是网络抖动，拿它做切换判据会横跳。扩展插件同理（宿主看不到内部状态）。
-//! 因此其余通道按用户给的顺序一直用，直到用户改配置。
+//! 只是网络抖动，拿它做切换判据会横跳。因此其余通道按用户给的顺序一直用，直到
+//! 用户改配置。
 
 use std::time::{Duration, Instant};
 
@@ -31,9 +30,10 @@ pub const MIN_DWELL: Duration = Duration::from_secs(30);
 
 /// 一个通道。
 ///
-/// 内置通道用固定 id 识别；其余 id 一律当作扩展插件（宽松解析：插件来源不可控，
-/// 未知 id 不应让配置解析失败，否则用户装了个插件写错 id 就会静默关掉同步）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// 只认内置 id：配置里出现别的 id（旧版插件、手写错字）由
+/// [`Channel::from_id`] 返回 `None`，调用方跳过并告警——宽松接受未知通道会让
+/// 「写错 id」表现为「同步静默关闭」，比直接报错更难排查。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Channel {
     /// 内置：ximed server（HTTP/WS）。
     Http,
@@ -41,60 +41,60 @@ pub enum Channel {
     WebDav,
     /// 内置：局域网直连。
     P2p,
-    /// 扩展：剪贴板同步插件（.xipk）id。
-    Plugin(String),
 }
 
 impl Channel {
-    /// 由配置里的 id 解析；无法识别的一律当插件。
-    pub fn from_id(id: &str) -> Self {
-        match id {
-            CHANNEL_HTTP => Self::Http,
-            CHANNEL_WEBDAV => Self::WebDav,
-            CHANNEL_P2P => Self::P2p,
-            other => Self::Plugin(other.to_string()),
+    /// 由配置里的 id 解析；未知 id 返回 `None`。
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id.trim() {
+            CHANNEL_HTTP => Some(Self::Http),
+            CHANNEL_WEBDAV => Some(Self::WebDav),
+            CHANNEL_P2P => Some(Self::P2p),
+            _ => None,
         }
     }
 
     /// 写回配置用的 id（与 [`Self::from_id`] 互逆）。
-    pub fn id(&self) -> &str {
+    pub fn id(&self) -> &'static str {
         match self {
             Self::Http => CHANNEL_HTTP,
             Self::WebDav => CHANNEL_WEBDAV,
             Self::P2p => CHANNEL_P2P,
-            Self::Plugin(id) => id,
         }
     }
 
-    /// 是否内置通道（内置的有专属配置页，插件没有）。
-    pub fn is_builtin(&self) -> bool {
-        !matches!(self, Self::Plugin(_))
-    }
-
-    /// 界面展示名。插件没有可靠的展示名（要读 manifest），用 id 兜底。
-    pub fn display_name(&self) -> String {
+    /// 界面展示名。
+    pub fn display_name(&self) -> &'static str {
         match self {
-            Self::Http => "HTTP 服务".to_string(),
-            Self::WebDav => "WebDAV".to_string(),
-            Self::P2p => "局域网直连".to_string(),
-            Self::Plugin(id) => format!("插件 {id}"),
+            Self::Http => "HTTP 服务",
+            Self::WebDav => "WebDAV",
+            Self::P2p => "局域网直连",
         }
     }
 }
 
-/// 规范化通道列表：去空、去重、保持顺序（顺序即优先级）。
+/// 规范化通道列表：去空、去重、丢弃未知 id、保持顺序（顺序即优先级）。
 ///
-/// 配置可能被手工编辑，重复 id 会让「首个优先」出现两个候选，切换时来回横跳。
+/// 配置可能被手工编辑，重复 id 会让「首个优先」出现两个候选，切换时来回横跳；
+/// 未知 id（旧版插件残留）留着只会让引擎选中一条不存在的通道。
 pub fn normalize(channels: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(channels.len());
     for id in channels {
-        let id = id.trim();
-        if id.is_empty() || out.iter().any(|seen| seen == id) {
+        let Some(channel) = Channel::from_id(id) else {
+            tracing::warn!(channel = id, "未知同步通道，已忽略");
+            continue;
+        };
+        if out.iter().any(|seen| seen == channel.id()) {
             continue;
         }
-        out.push(id.to_string());
+        out.push(channel.id().to_string());
     }
     out
+}
+
+/// 默认通道列表：沿用后台的 HTTP 本机 server，保证旧用户升级后同步不中断。
+pub fn default_channels() -> Vec<String> {
+    vec![CHANNEL_HTTP.to_string()]
 }
 
 /// 通道健康度。
@@ -203,13 +203,13 @@ mod tests {
     #[test]
     fn 内置通道_id_可互逆解析() {
         for id in [CHANNEL_HTTP, CHANNEL_WEBDAV, CHANNEL_P2P] {
-            assert_eq!(Channel::from_id(id).id(), id);
-            assert!(Channel::from_id(id).is_builtin());
+            let channel = Channel::from_id(id).expect("内置通道应可识别");
+            assert_eq!(channel.id(), id);
+            assert!(!channel.display_name().is_empty());
         }
-        let plugin = Channel::from_id("com.example.sync");
-        assert_eq!(plugin, Channel::Plugin("com.example.sync".into()));
-        assert!(!plugin.is_builtin());
-        assert_eq!(plugin.id(), "com.example.sync");
+        // 未知 id（旧版插件残留）必须被识别为「不存在」，不能当成可用通道
+        assert!(Channel::from_id("com.example.sync").is_none());
+        assert!(Channel::from_id("").is_none());
     }
 
     #[test]
@@ -219,6 +219,15 @@ mod tests {
             ids(&["p2p", "webdav", "http"])
         );
         assert!(normalize(&[]).is_empty());
+    }
+
+    #[test]
+    fn 规范化丢弃未知通道() {
+        assert_eq!(
+            normalize(&ids(&["com.example.sync", "webdav"])),
+            ids(&["webdav"])
+        );
+        assert!(normalize(&ids(&["com.example.sync"])).is_empty());
     }
 
     #[test]

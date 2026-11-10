@@ -178,6 +178,287 @@ pub fn has_peer(base: impl AsRef<Path>) -> bool {
     peers(base).map(|list| !list.is_empty()).unwrap_or(false)
 }
 
+/// 启动设备层并包装成同步通道。
+///
+/// # 为什么构造要另起线程
+///
+/// [`ensure`] 内部 `block_on`，在 tokio 上下文里直接调用会 panic，而通道是在
+/// `SyncEngine::new`（异步上下文）里装配的。这里把启动丢到独立线程并等结果，
+/// 最多等 [`START_TIMEOUT`]；超时按启动失败处理，调用方降级到备用通道。
+pub fn open_transport(base: impl AsRef<Path>) -> Result<P2pTransport, String> {
+    let base = base.as_ref().to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("xime-p2p-start".to_string())
+        .spawn(move || {
+            let _ = tx.send(ensure(&base));
+        })
+        .map_err(|e| format!("P2P 启动线程创建失败：{e}"))?;
+    match rx.recv_timeout(START_TIMEOUT) {
+        Ok(Ok(port)) => Ok(P2pTransport { port }),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err("P2P 节点启动超时".to_string()),
+    }
+}
+
+/// 节点启动的最长等待时间（绑定端口 + 读身份，正常在毫秒级）。
+const START_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 局域网直连通道。
+///
+/// 语义与 HTTP / WebDAV 的差异（必须显式处理，否则界面会撒谎）：
+///
+/// - **推模型、无快照**：没有「服务器当前值」可拉，[`Transport::pull`] 恒为 `None`；
+/// - **无对端不等于成功**：`set_clipboard` 在没有对端时只是缓存，直接返回 `Ok`
+///   会让引擎一直上报「在线」。这里在无连接时返错，复用引擎既有的退避与离线
+///   上报——用户看到的「离线」才是真实状态。
+pub struct P2pTransport {
+    /// 实际监听端口（可能因占用顺延，仅用于日志与展示）。
+    port: u16,
+}
+
+impl P2pTransport {
+    /// 本机实际监听端口。
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::transport::Transport for P2pTransport {
+    async fn push(&self, profile: &Profile) -> Result<(), crate::transport::TransportError> {
+        if !is_connected() {
+            return Err(crate::transport::TransportError::Connect(
+                "局域网内没有在线设备".to_string(),
+            ));
+        }
+        if set_clipboard(profile.clone()) {
+            Ok(())
+        } else {
+            Err(crate::transport::TransportError::Send(
+                "P2P 节点未运行".to_string(),
+            ))
+        }
+    }
+
+    async fn pull(&self) -> Result<Option<Profile>, crate::transport::TransportError> {
+        // 推模型没有快照可拉；启动补发由节点缓存负责（协议只关心最新值）。
+        Ok(None)
+    }
+
+    async fn next_event(
+        &self,
+        timeout: Duration,
+    ) -> Result<Option<Profile>, crate::transport::TransportError> {
+        // 用非阻塞 poll 轮询而不是 spawn_blocking(wait_event)：引擎每个轮询周期都会
+        // 调一次，spawn_blocking 会持续占用阻塞线程池；50ms 粒度对剪贴板足够。
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            match poll() {
+                Some(Event::Clipboard(profile)) => return Ok(Some(profile)),
+                Some(_) => continue,
+                None => {}
+            }
+            if std::time::Instant::now() >= deadline {
+                return Ok(None);
+            }
+            tokio::time::sleep(POLL_STEP).await;
+        }
+    }
+}
+
+/// 事件轮询步长。
+const POLL_STEP: Duration = Duration::from_millis(50);
+
+// ---------------------------------------------------------------------------
+// 配对
+// ---------------------------------------------------------------------------
+
+/// 配对结果（后台线程 → UI）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PairEvent {
+    /// 配对成功，对端已写入设备表。
+    Paired { name: String, did: String },
+    /// 失败原因（已转成给人看的中文描述）。
+    Failed(String),
+}
+
+/// 显示端配对会话句柄。
+///
+/// 会话本体被等待线程独占（`wait` 会阻塞），UI 只留这个取消句柄与配对码。
+/// `Clone` 只克隆码与取消句柄（`Arc` 内部），不会复制会话或再开端口。
+#[derive(Clone)]
+pub struct DisplayPairing {
+    code: String,
+    stop: xime_p2p::StopHandle,
+    /// 生码时刻：界面据此显示倒计时（码本身 60 秒过期）。
+    issued: std::time::Instant,
+}
+
+impl std::fmt::Debug for DisplayPairing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DisplayPairing")
+            .field("code", &self.code)
+            .finish_non_exhaustive()
+    }
+}
+
+impl DisplayPairing {
+    /// 显示给用户的码，形如 `482 719`。
+    pub fn code(&self) -> &str {
+        &self.code
+    }
+
+    /// 叫停等待：用于「重新生成」与「取消」。不叫停会一直占着配对端口。
+    pub fn cancel(&self) {
+        self.stop.cancel();
+    }
+
+    /// 剩余有效期秒数（过期返回 0）。
+    pub fn remaining_secs(&self) -> u64 {
+        xime_p2p::CODE_TTL
+            .saturating_sub(self.issued.elapsed())
+            .as_secs()
+    }
+
+    /// 剩余比例（1.0 → 0.0），用于倒计时进度条。
+    pub fn remaining_ratio(&self) -> f32 {
+        let total = xime_p2p::CODE_TTL.as_secs_f32().max(1.0);
+        (self.remaining_secs() as f32 / total).clamp(0.0, 1.0)
+    }
+}
+
+/// 暂停常驻节点，为配对让出端口。
+///
+/// 配对与常驻节点抢同一组端口（节点 TCP `47821` + 发现 UDP `47822`，配对监听
+/// TCP `47822` + 广播 UDP `47822`），而这对监听都没有 `SO_REUSEADDR`。桌面是单
+/// 进程，不暂停就 100% 绑不上——表现为「点配对没反应」，日志里只有一行 EADDRINUSE。
+fn pause_node() -> bool {
+    let was_running = is_running();
+    if was_running {
+        shutdown();
+    }
+    was_running
+}
+
+/// 配对结束后恢复节点（原本没起就不要凭空启动）。
+fn resume_node(base: &Path, was_running: bool) {
+    if !was_running {
+        return;
+    }
+    if let Err(e) = ensure(base) {
+        tracing::warn!("配对结束后重启 P2P 节点失败：{e}");
+    }
+}
+
+/// 开始「显示配对码」：立即返回码，等待与结果在后台线程完成。
+///
+/// 回调在后台线程执行，宿主应通过自己的事件通道送回 UI 线程。
+pub fn start_display_pairing(
+    base: impl AsRef<Path>,
+    name: String,
+    on_event: impl FnOnce(PairEvent) + Send + 'static,
+) -> Result<DisplayPairing, String> {
+    let root = base.as_ref().to_path_buf();
+    let dir = data_dir(&root);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("P2P 目录创建失败：{e}"))?;
+    let was_running = pause_node();
+    let identity = xime_p2p::load_or_create_identity(&dir)
+        .ok_or_else(|| "P2P 身份不可用（系统随机源异常）".to_string())?;
+    let store_path = dir.join(PEERS_FILE);
+    let session = match xime_p2p::DisplaySession::start(identity, store_path, name) {
+        Ok(s) => s,
+        Err(e) => {
+            resume_node(&root, was_running);
+            return Err(format!("配对端口不可用：{e}"));
+        }
+    };
+    let code = session.code_text();
+    let stop = session.stop_handle();
+    let mut session = session;
+    std::thread::Builder::new()
+        .name("xime-p2p-pair".to_string())
+        .spawn(move || {
+            let event = match session.wait(xime_p2p::CODE_TTL) {
+                Ok(peer) => PairEvent::Paired {
+                    name: peer.name().to_string(),
+                    did: peer.did().to_hex(),
+                },
+                Err(e) => PairEvent::Failed(friendly_error(&e)),
+            };
+            resume_node(&root, was_running);
+            on_event(event);
+        })
+        .map_err(|e| format!("配对线程创建失败：{e}"))?;
+    Ok(DisplayPairing {
+        code,
+        stop,
+        issued: std::time::Instant::now(),
+    })
+}
+
+/// 输入端：用对方的码配对（后台线程，立即返回）。
+pub fn start_join_pairing(
+    base: impl AsRef<Path>,
+    name: String,
+    code: String,
+    on_event: impl FnOnce(PairEvent) + Send + 'static,
+) -> Result<(), String> {
+    let root = base.as_ref().to_path_buf();
+    let dir = data_dir(&root);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("P2P 目录创建失败：{e}"))?;
+    let was_running = pause_node();
+    let identity = xime_p2p::load_or_create_identity(&dir)
+        .ok_or_else(|| "P2P 身份不可用（系统随机源异常）".to_string())?;
+    let store_path = dir.join(PEERS_FILE);
+    std::thread::Builder::new()
+        .name("xime-p2p-join".to_string())
+        .spawn(move || {
+            let event = match xime_p2p::join(identity, store_path, &code, name, xime_p2p::CODE_TTL)
+            {
+                Ok(peer) => PairEvent::Paired {
+                    name: peer.name().to_string(),
+                    did: peer.did().to_hex(),
+                },
+                Err(e) => PairEvent::Failed(friendly_error(&e)),
+            };
+            resume_node(&root, was_running);
+            on_event(event);
+        })
+        .map_err(|e| format!("配对线程创建失败：{e}"))?;
+    Ok(())
+}
+
+/// 移除一台已配对设备。移除后对端需要重新配对才能连上（信任是双向的）。
+pub fn remove_peer(base: impl AsRef<Path>, did: &str) -> Result<bool, String> {
+    let path = data_dir(base.as_ref()).join(PEERS_FILE);
+    let mut store = PeerStore::load(&path).map_err(|e| e.to_string())?;
+    let removed = store.remove(did).map_err(|e| e.to_string())?;
+    store.save().map_err(|e| e.to_string())?;
+    Ok(removed)
+}
+
+/// 节点实际监听端口（未启动返回 `None`）。
+pub fn local_port() -> Option<u16> {
+    with(|node| node.local_port())
+}
+
+/// 把协议错误翻成用户能看懂的一句话。
+///
+/// 直接把 `Error` 的 Debug 丢到界面上，用户只会看到 `AuthFailed` 这种词——而
+/// 配对失败最常见的原因其实是「码输错了」或「对方没在配对界面」。
+fn friendly_error(err: &xime_p2p::Error) -> String {
+    use xime_p2p::Error;
+    match err {
+        Error::AuthFailed => "配对码不正确，请核对后重试".to_string(),
+        Error::CodeExpired => "配对码已过期，请在对方设备上重新生成".to_string(),
+        Error::TooManyAttempts => "尝试次数过多，请重新生成配对码".to_string(),
+        Error::Busy => "对方正在与另一台设备配对".to_string(),
+        Error::VersionMismatch { .. } => "两台设备的协议版本不一致，请升级后重试".to_string(),
+        other => other.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

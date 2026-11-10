@@ -155,3 +155,59 @@ xime-plugin/serde_yaml/sha2/hex/zip 依赖、`AdapterKind`（原 Server/Plugin �
   需在同步页重新填一次；`plugins/` 目录可留可删，代码不再读取。
 - 想写自定义传输后端时再评估扩展机制，届时用 wasm（wasmi 之类）而不是 JS/Lua 沙箱。
 
+
+## 17. 通道模型：三个内置通道 + 有序列表 + 只让 P2P 参与降级（2026-11-10）
+
+同步通道收敛为 `http` / `webdav` / `p2p` 三个内置 id 之后：
+
+- **有序列表，同刻只跑一条**：剪贴板是单值资源，双写会重复推送、回写还会互相触发。
+  列表顺序即优先级，`channel::decide` 决定当前用哪一条；配置字段是
+  `channels = ["p2p", "webdav"]`，与 XimeYi / Android 同语义。
+- **只有 P2P 参与健康判定**：P2P 有 `Event::Peer` 的真实连接态；HTTP / WebDAV 只有
+  「这次 push 成不成」，一次失败可能只是抖动，拿它切换会横跳。其余通道按用户给的
+  顺序一直用，直到用户改配置。
+- **未知 id 直接丢弃并告警**（作废决策 15 时期的「宽松解析成插件」）：宽松接受会让
+  「写错 id」表现为同步静默关闭，比直接报错更难排查。
+- **列表为空 / 全部不可用 → 退回 HTTP**：旧用户升级后同步不能因为配置为空而停摆。
+- **切换对引擎透明**：`client/src/router.rs` 的 `Router` 实现 `Transport`，每轮调用前
+  按 `decide` 复核、必要时换一条再转发。引擎的去重 / 回声抑制 / 退避状态不因切换重置。
+
+## 18. 桌面配置改为「每通道一节 + 单一草稿」（2026-11-10）
+
+`AppSettings` 从扁平的 `mode` / `remote_*` 改为：
+
+```toml
+channels = ["p2p", "webdav"]
+[http]    # mode / url / username / password
+[webdav]  # url / file / username / password(_env)
+[p2p]     # device_name
+[sync]    # 开关与白名单
+```
+
+- **迁移在 `load()` 里做一次**：旧扁平字段用 `#[serde(flatten, skip_serializing)]`
+  读入，`migrated()` 搬进 `[http]` 后清空；保存时写新形状，旧 key 不再出现。
+- **`p2p.data_dir` 不落盘**：它由宿主按部署位置注入（`<config_dir>/p2p`），属于环境
+  而非用户偏好；写进配置文件会让「换目录后配对表找错」。
+- **UI 只持有一份 `AppSettings` 草稿**：原来 20 多个平行字段里「改了一半的界面」
+  与「已保存的配置」混在一起，保存失败后界面显示的是没生效的值。
+
+## 19. 桌面视觉对齐 xime-setup 组件词汇（2026-11-10）
+
+不再自造样式，直接对齐 `libximecore/crates/xime-setup`：
+
+- 主题常量取 `ThemeColors` 深色一档（背景 `#09090b`、卡片 `#141417`、轨道 `#26262b`、
+  控件底 `#212126`），圆角 14/12/8，控件统一高 36。
+- 组件：`settings_group`（标题 + 描述 + 条目）、`settings_item`（左 label/描述 + 右控件）、
+  `tab_bar`（等宽药丸分段）、`badge`、`banner`（成功/失败提示条）、主题化 `toggler`、
+  细进度条；侧栏改「分组标题 + 导航项」。
+- 布局语义照 `pages/pair.rs`：配对方向用分段控件分开，一次只显示一个主按钮；码用
+  34px 主色 + 倒计时进度条；另一方向还在跑时给出跨 tab 提示。
+
+## 20. LICENSE：p2p 并入默认桌面产物后必须转 GPL（待决，2026-11-10）
+
+`xime-p2p` 与当前的 `xime-sync-domain` 都是 GPL-3.0-or-later，本仓仍是 MIT。
+决策 15 把 p2p 放在默认关闭的 feature 里，默认产物还没引入 GPL 代码；本次为了做设备页，
+`tray` feature 依赖了 `client/p2p`，**默认桌面产物已是 GPL 代码**。
+
+需要拍板：把 `LICENSE` 整体换成 GPL-3.0-or-later（与 XimeYi / Android 一致），
+或者把设备页从默认构建里摘出去（feature 化）——后者会让桌面版默认没有局域网直连。

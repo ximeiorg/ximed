@@ -71,6 +71,20 @@ impl WebDavSettings {
     }
 }
 
+/// 局域网直连设置。
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct P2pSettings {
+    /// 设备名（配对时展示给对端）；空则用主机名。
+    #[serde(default)]
+    pub device_name: String,
+    /// 设备层数据根目录（身份与已配对表在 `<data_dir>/p2p`）。
+    ///
+    /// 必须与配对页用的是同一个目录，否则会出现「配对成功但同步认为未配对」，
+    /// 而界面上看不出任何异常。空表示局域网通道不可用。
+    #[serde(default)]
+    pub data_dir: String,
+}
+
 /// client 配置。
 #[derive(Debug, Clone, Deserialize)]
 pub struct ClientConfig {
@@ -103,6 +117,15 @@ pub struct ClientConfig {
     /// 是否启用 WS 实时通道（false 则纯 HTTP 轮询）。
     #[serde(default = "default_true")]
     pub ws_enabled: bool,
+    /// 通道优先级列表（首个优先）；空则退回默认 HTTP 通道。
+    #[serde(default = "crate::channel::default_channels")]
+    pub channels: Vec<String>,
+    /// WebDAV 通道参数。
+    #[serde(default)]
+    pub webdav: WebDavSettings,
+    /// 局域网直连参数。
+    #[serde(default)]
+    pub p2p: P2pSettings,
 }
 
 impl Default for ClientConfig {
@@ -117,6 +140,9 @@ impl Default for ClientConfig {
             http_fallback_ms: default_poll_ms(),
             heartbeat_secs: default_heartbeat_secs(),
             ws_enabled: default_true(),
+            channels: crate::channel::default_channels(),
+            webdav: WebDavSettings::default(),
+            p2p: P2pSettings::default(),
         }
     }
 }

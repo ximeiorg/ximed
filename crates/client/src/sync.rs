@@ -407,16 +407,65 @@ impl SyncEngine {
     }
 }
 
-/// 按配置构建传输通道：WS 实时，关闭则 HTTP 轮询。
+/// 按配置构建通道：把 `channels` 列表里可用的通道装配成一条路由。
 ///
-/// 通道选择（http / webdav / p2p 的优先级与降级）在 `app` 侧按
-/// [`crate::channel`] 的决策结果注入，这里只负责造出被选中的那一条。
+/// 列表顺序即优先级；不可用的通道直接跳过并告警，而不是让整条同步失败——
+/// 「WebDAV 还没填地址」不应该连 HTTP 通道一起停掉。列表为空或全部不可用时，
+/// 退回默认 HTTP 通道：旧用户升级后同步不能中断。
 pub(crate) fn make_transport(cfg: &ClientConfig, password: &str) -> Arc<dyn Transport> {
-    if cfg.ws_enabled {
-        Arc::new(WsTransport::new(cfg, password))
-    } else {
-        Arc::new(HttpTransport::new(cfg, password))
+    use crate::channel::{CHANNEL_HTTP, Channel};
+
+    let http = || -> Arc<dyn Transport> {
+        if cfg.ws_enabled {
+            Arc::new(WsTransport::new(cfg, password))
+        } else {
+            Arc::new(HttpTransport::new(cfg, password))
+        }
+    };
+
+    let mut entries: Vec<(String, Arc<dyn Transport>)> = Vec::new();
+    for id in crate::channel::normalize(&cfg.channels) {
+        let Some(channel) = Channel::from_id(&id) else {
+            continue;
+        };
+        match channel {
+            Channel::Http => entries.push((id, http())),
+            Channel::WebDav => {
+                if cfg.webdav.is_configured() {
+                    entries.push((
+                        id,
+                        Arc::new(crate::webdav::WebDavTransport::new(&cfg.webdav)),
+                    ));
+                } else {
+                    tracing::warn!("WebDAV 通道未配置地址，已跳过");
+                }
+            }
+            Channel::P2p => {
+                #[cfg(feature = "p2p")]
+                {
+                    if cfg.p2p.data_dir.trim().is_empty() {
+                        tracing::warn!("局域网通道缺少数据目录，已跳过");
+                    } else {
+                        match crate::p2p::open_transport(&cfg.p2p.data_dir) {
+                            Ok(t) => entries.push((id, Arc::new(t))),
+                            Err(e) => tracing::warn!("局域网通道启动失败，已跳过：{e}"),
+                        }
+                    }
+                }
+                #[cfg(not(feature = "p2p"))]
+                tracing::warn!("局域网通道需要 client 的 p2p feature，已跳过");
+            }
+        }
     }
+    if entries.is_empty() {
+        tracing::warn!("没有可用的同步通道，退回 HTTP 通道");
+        entries.push((CHANNEL_HTTP.to_string(), http()));
+    }
+    tracing::info!(
+        channels = %entries.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>().join(","),
+        "同步通道已装配"
+    );
+    Arc::new(crate::router::Router::new(entries))
 }
 
 #[cfg(test)]

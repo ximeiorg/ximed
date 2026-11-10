@@ -23,7 +23,7 @@ use client::sync::{SyncEngine, SyncStatus};
 use xime_sync_domain::profile::Profile;
 
 use crate::settings::{AppSettings, SyncMode};
-use crate::ui::{ApplySettingsPayload, UiCmd, UiMsg, UiSender, run_ui, ui_channel, ui_cmd_channel};
+use crate::ui::{UiCmd, UiMsg, UiSender, run_ui, ui_channel, ui_cmd_channel};
 
 /// 本机局域网 IPv4：经默认路由探测（UDP connect 不发包），零新依赖。
 /// 返回的是局域网其他设备可直接连接的地址；无可用路由时返回 None。
@@ -53,9 +53,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 已配置（配置文件 password / 环境变量）则直接复用。
     let server_pw = server_password(&mut settings);
 
-    // desktop 形态：client 连接目标由设置决定（本机 / 远端 server）。
-    apply_http_settings(&app_settings, &mut client_cfg, &settings, &server_pw);
-    // 本地模式：密码跟随本地 server 的认证密码（apply_http_settings 已注入）。
+    // desktop 形态：通道优先级与各通道参数都来自应用设置。
+    apply_transport_settings(
+        &app_settings,
+        &mut client_cfg,
+        &settings,
+        &server_pw,
+        &config_dir,
+    );
 
     // 日志级别取 server 配置
     xime_sync_server::init_tracing(&settings.server().log_level);
@@ -125,31 +130,36 @@ fn local_server_url(settings: &xime_sync_server::config::Settings) -> String {
     format!("http://{host}:{port}")
 }
 
-/// 按应用设置更新 client 的 HTTP 连接参数（本机 / 远端 server）。
+/// 把应用设置投影到 client 运行时配置。
 ///
-/// 目前只有 HTTP 通道会用到这份配置；WebDAV 与局域网直连各自的参数在
-/// `client::config::WebDavSettings` / 设备层里，不经过这里。
-fn apply_http_settings(
+/// 一处收敛三件事：
+/// - **HTTP 参数**：本机模式跟随 server 监听地址与认证密码，远程模式用用户填的值；
+/// - **通道列表**：顺序即优先级，引擎据此装配并降级；
+/// - **局域网数据目录**：由宿主补齐（设备层与配对页必须指向同一个 `<config_dir>/p2p`），
+///   不落盘——它是部署位置，不是用户偏好。
+fn apply_transport_settings(
     app_settings: &AppSettings,
     client_cfg: &mut ClientConfig,
     settings: &xime_sync_server::config::Settings,
     server_pw: &str,
+    config_dir: &str,
 ) {
-    match app_settings.mode {
+    match app_settings.http.mode {
         SyncMode::Local => {
             client_cfg.server_url = local_server_url(settings);
             client_cfg.username = settings.auth().username.clone();
             client_cfg.password = Some(server_pw.to_string());
         }
         SyncMode::Remote => {
-            if !app_settings.remote_url.is_empty() {
-                client_cfg.server_url = app_settings.remote_url.clone();
+            if !app_settings.http.url.is_empty() {
+                client_cfg.server_url = app_settings.http.url.clone();
             }
-            if !app_settings.remote_username.is_empty() {
-                client_cfg.username = app_settings.remote_username.clone();
+            if !app_settings.http.username.is_empty() {
+                client_cfg.username = app_settings.http.username.clone();
             }
             if let Some(pw) = app_settings
-                .remote_password
+                .http
+                .password
                 .as_ref()
                 .filter(|p| !p.is_empty())
             {
@@ -157,6 +167,10 @@ fn apply_http_settings(
             }
         }
     }
+    client_cfg.channels = app_settings.normalized_channels();
+    client_cfg.webdav = app_settings.webdav.clone();
+    client_cfg.p2p = app_settings.p2p.clone();
+    client_cfg.p2p.data_dir = config_dir.to_string();
 }
 
 /// 后台服务控制循环：响应 UI 命令，统一管理本地 server、client 同步引擎与历史轮询。
@@ -278,31 +292,19 @@ async fn desktop_control_loop(
                 UiCmd::OpenConfigDir => {
                     open_dir();
                 }
-                UiCmd::ApplySettings(payload) => {
-                    let ApplySettingsPayload {
-                        mode,
-                        remote_url,
-                        remote_username,
-                        remote_password,
-                        sync,
-                    } = *payload;
-                    let app_settings = AppSettings {
-                        mode,
-                        remote_url: remote_url.clone(),
-                        remote_username: remote_username.clone(),
-                        remote_password: if remote_password.is_empty() {
-                            None
-                        } else {
-                            Some(remote_password.clone())
-                        },
-                        sync,
-                    };
-                    if let Err(e) = app_settings.save(&config_dir(&settings)) {
+                UiCmd::ApplySettings(app_settings) => {
+                    let settings_dir = config_dir(&settings);
+                    if let Err(e) = app_settings.save(&settings_dir) {
                         tracing::warn!("failed to persist app settings: {e}");
                     }
-                    // 更新 client 的 HTTP 连接参数（本机 / 远端）
-                    apply_http_settings(&app_settings, &mut client_cfg, &settings, &server_pw);
-                    // 用新配置重建 client 引擎 + 历史轮询
+                    // 通道列表 / WebDAV 参数 / 局域网数据目录都变了，重建引擎
+                    apply_transport_settings(
+                        &app_settings,
+                        &mut client_cfg,
+                        &settings,
+                        &server_pw,
+                        &settings_dir,
+                    );
                     stop_client_services(&mut engine_task, &mut history_task);
                     sync_settings = app_settings.sync.clone();
                     spawn_client_services(

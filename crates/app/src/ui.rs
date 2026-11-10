@@ -31,10 +31,16 @@ use crate::settings::{AppSettings, SyncMode};
 /// 面板切换。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
+    /// 概览：同步是否通、谁在同步、总开关。
     Status,
-    History,
-    /// 同步：同步方式（插件选择 + 插件配置表单）+ 同步开关 + 插件商店。
+    /// 同步：通道优先级、当前通道配置、同步内容。
     Sync,
+    /// 设备：局域网身份、配对、已配对设备。
+    Device,
+    /// 剪贴板历史。
+    History,
+    /// 设置：数据目录、HTTP 通道（高级）、关于。
+    Settings,
 }
 
 /// 后台 → UI 的桌面级事件（跨线程 channel 负载）。
@@ -58,8 +64,12 @@ pub enum UiMsg {
     SyncStatus { online: bool },
     /// 收到远端剪贴板内容（通知开关开启时上报，携带来源设备）。
     Downloaded { source: Option<String> },
-    /// 设置已保存并应用（连接模式/远程服务器已生效）。
+    /// 设置已保存并应用（通道/内容范围已生效）。
     SettingsApplied,
+    /// 配对结果（后台配对线程产生）。
+    Pairing(client::p2p::PairEvent),
+    /// 通道连通性测试结果。
+    ConnectionTested { ok: bool, message: String },
     /// 显示窗口（托盘菜单/左键点击触发）。
     ShowWindow,
     /// 隐藏窗口到托盘（托盘菜单触发）。
@@ -79,18 +89,29 @@ pub enum UiCmd {
     ServerStop,
     /// 打开配置文件所在目录。
     OpenConfigDir,
-    /// 应用新设置（同步适配器 + 连接模式 + 远端/插件表单 + 同步设置），持久化并重启 client 引擎。
-    ApplySettings(Box<ApplySettingsPayload>),
+    /// 应用新设置（通道优先级 / 各通道参数 / 同步内容），持久化并重启 client 引擎。
+    ApplySettings(Box<AppSettings>),
 }
 
-/// 设置保存载荷（独立结构避免 UiCmd variant 大小差异过大）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ApplySettingsPayload {
-    pub mode: SyncMode,
-    pub remote_url: String,
-    pub remote_username: String,
-    pub remote_password: String,
-    pub sync: client::settings::SyncSettings,
+/// 通道配置字段：一条消息覆盖三种通道的所有表单项。
+///
+/// 不用「每个字段一个 Message」：通道参数会随通道增加而膨胀，逐个加变体既啰嗦
+/// 又容易漏改（新增字段要同时改 message / update / view 三处）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelField {
+    WebDavUrl,
+    WebDavFile,
+    WebDavUsername,
+    WebDavPassword,
+    P2pName,
+}
+
+/// HTTP 通道（设置 · 高级）字段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HttpField {
+    Url,
+    Username,
+    Password,
 }
 
 /// UI 消息（iced Message：channel 事件 + 按钮动作）。
@@ -118,22 +139,57 @@ pub enum Message {
     OpenConfigDir,
     /// 退出按钮。
     Quit,
-    /// 同步主开关。
+    /// 同步主开关（草稿，点「保存并应用」才生效）。
     SettingsSyncSwitch(bool),
-    /// 推送开关（本地 → 服务器）。
+    /// 推送开关（本地 → 通道）。
     SettingsSyncPush(bool),
-    /// 拉取开关（服务器 → 本地）。
+    /// 拉取开关（通道 → 本地）。
     SettingsSyncPull(bool),
-    /// 上传文本开关。
     SettingsSyncUploadText(bool),
-    /// 上传图片开关（框架预留）。
     SettingsSyncUploadImage(bool),
-    /// 上传单文件开关（框架预留）。
     SettingsSyncUploadSingleFile(bool),
-    /// 上传大小上限（MB，文本输入）。
+    /// 上传大小上限（MB，文本态）。
     SettingsSyncMaxFileMb(String),
-    /// 收到远端内容时通知开关。
+    /// 收到远端内容时通知。
     SettingsSyncNotify(bool),
+    /// 选中要编辑配置的通道。
+    ChannelSelect(String),
+    /// 启用 / 停用某个通道（从优先级列表增删）。
+    ChannelToggle(String),
+    /// 提高通道优先级。
+    ChannelMoveUp(String),
+    /// 降低通道优先级。
+    ChannelMoveDown(String),
+    /// 编辑通道参数（一条消息覆盖所有通道表单）。
+    ChannelField {
+        field: ChannelField,
+        value: String,
+    },
+    /// 测试当前选中通道的连通性。
+    TestConnection,
+    /// 编辑本机设备名（局域网配对时展示给对方）。
+    DeviceName(String),
+    /// 生成显示码（本机作为显示端）。
+    PairingStartDisplay,
+    /// 用对方的码配对（本机作为输入端）。
+    PairingStartJoin,
+    /// 取消配对 / 重新生成。
+    PairingCancel,
+    /// 输入对方的配对码。
+    PairingInput(String),
+    /// 切换配对方向（0 显示 / 1 输入）。
+    PairingTab(usize),
+    /// 每秒心跳：只用于刷新配对码倒计时。
+    Tick,
+    /// 移除已配对设备。
+    RemovePeer(String),
+    /// 设置页：切换 HTTP 通道的本机 / 远程模式。
+    HttpMode(SyncMode),
+    /// 设置页：编辑 HTTP 通道字段。
+    HttpField {
+        field: HttpField,
+        value: String,
+    },
     /// 保存并应用设置。
     ApplySettings,
 }
@@ -159,35 +215,42 @@ pub struct UiState {
     pub expanded_history: Option<u64>,
     /// 是否显示服务器控制区（desktop 模式 true，client-only false）。
     pub local_server: bool,
-    /// 配置目录路径（打开文件管理器用）。
+    /// 配置目录路径（数据目录 / 打开文件管理器用）。
     pub config_dir: String,
-    /// 连接模式（本地 / 远程 server）。
-    pub sync_mode: SyncMode,
-    /// 远程服务器地址（设置面板编辑）。
-    pub remote_url: String,
-    /// 远程服务器用户名（设置面板编辑）。
-    pub remote_username: String,
-    /// 远程服务器密码（设置面板编辑）。
-    pub remote_password: String,
-    /// 同步主开关（设置面板编辑）。
-    pub sync_switch_on: bool,
-    /// 推送开关（设置面板编辑）。
-    pub sync_push_on: bool,
-    /// 拉取开关（设置面板编辑）。
-    pub sync_pull_on: bool,
-    /// 上传文本开关（设置面板编辑）。
-    pub sync_upload_text: bool,
-    /// 上传图片开关（设置面板编辑，框架预留）。
-    pub sync_upload_image: bool,
-    /// 上传单文件开关（设置面板编辑，框架预留）。
-    pub sync_upload_single_file: bool,
-    /// 上传大小上限（MB，文本输入，设置面板编辑）。
-    pub sync_max_file_mb: String,
-    /// 收到远端内容时通知开关（设置面板编辑）。
-    pub sync_notify: bool,
+    /// 设置草稿：所有编辑都写这里，点「保存并应用」才落盘并重建引擎。
+    ///
+    /// 单一来源替代原先 20 多个平行字段——原来「改了一半的界面」与「已保存的配置」
+    /// 混在一起，取消/失败后界面显示的是没生效的值。
+    pub draft: AppSettings,
+    /// 当前正在编辑配置的通道 id。
+    pub selected_channel: String,
+    /// 上传大小上限（MB，文本态：输入过程中可能为空）。
+    pub max_file_mb: String,
+    /// 已配对设备（局域网通道）。
+    pub device_peers: Vec<client::p2p::PeerInfo>,
+    /// 设备表读取错误（损坏时不静默当作空表）。
+    pub device_error: Option<String>,
+    /// 显示中的配对码（会话进行中）。
+    pub pairing_code: Option<String>,
+    /// 显示端会话句柄（取消时用；会话本体在后台线程里阻塞等待）。
+    pairing_handle: Option<client::p2p::DisplayPairing>,
+    /// 输入中的配对码。
+    pub pairing_input: String,
+    /// 配对状态文本。
+    pub pairing_status: String,
+    /// 状态文本是否为失败（决定提示条配色）。
+    pub pairing_error: bool,
+    /// 配对进行中（禁用按钮，避免重复开端口）。
+    pub pairing_busy: bool,
+    /// 配对方向：0 = 显示配对码，1 = 输入配对码（对齐 setup 的 tab_bar）。
+    pub pairing_tab: usize,
+    /// 通道连通性测试结果文本。
+    pub channel_test: String,
+    /// 测试结果是否成功（着色用）；`None` 表示未测试。
+    pub channel_test_ok: Option<bool>,
     /// 设置保存状态提示文本。
     pub settings_status: String,
-    /// client 是否已连上 server（引擎上报）。
+    /// client 是否已连上通道（引擎上报）。
     pub sync_online: bool,
     /// 后台命令发送端。
     cmd_tx: UiCmdSender,
@@ -210,7 +273,14 @@ impl UiState {
         local_server: bool,
         config_dir: String,
     ) -> Self {
-        Self {
+        let draft = app_settings.clone();
+        let selected_channel = draft
+            .channels
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "http".to_string());
+        let max_file_mb = (draft.sync.max_file_byte / (1024 * 1024)).to_string();
+        let mut state = Self {
             server_url: cfg.server_url.clone(),
             source: cfg.source.clone(),
             server_status: "stopped".to_string(),
@@ -221,18 +291,20 @@ impl UiState {
             expanded_history: None,
             local_server,
             config_dir,
-            sync_mode: app_settings.mode,
-            remote_url: app_settings.remote_url.clone(),
-            remote_username: app_settings.remote_username.clone(),
-            remote_password: app_settings.remote_password.clone().unwrap_or_default(),
-            sync_switch_on: app_settings.sync.switch_on,
-            sync_push_on: app_settings.sync.push_switch_on,
-            sync_pull_on: app_settings.sync.pull_switch_on,
-            sync_upload_text: app_settings.sync.upload_text,
-            sync_upload_image: app_settings.sync.upload_image,
-            sync_upload_single_file: app_settings.sync.upload_single_file,
-            sync_max_file_mb: (app_settings.sync.max_file_byte / (1024 * 1024)).to_string(),
-            sync_notify: app_settings.sync.notify_on_downloaded,
+            draft,
+            selected_channel,
+            max_file_mb,
+            device_peers: Vec::new(),
+            device_error: None,
+            pairing_code: None,
+            pairing_handle: None,
+            pairing_input: String::new(),
+            pairing_status: String::new(),
+            pairing_error: false,
+            pairing_busy: false,
+            pairing_tab: 0,
+            channel_test: String::new(),
+            channel_test_ok: None,
             settings_status: String::new(),
             sync_online: false,
             cmd_tx,
@@ -240,7 +312,9 @@ impl UiState {
             window_id: None,
             window_width: 1024.0,
             tray_started: false,
-        }
+        };
+        state.reload_peers();
+        state
     }
 }
 
@@ -295,7 +369,11 @@ pub fn run_ui(
         })
         .exit_on_close_request(false)
         .subscription(move |_state| {
-            Subscription::batch([backend_events(rx.clone()), window_events()])
+            Subscription::batch([
+                backend_events(rx.clone()),
+                window_events(),
+                iced::time::every(std::time::Duration::from_secs(1)).map(|_| Message::Tick),
+            ])
         })
         .theme(theme)
         .run()
@@ -357,6 +435,28 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
         Message::Backend(UiMsg::SettingsApplied) => {
             state.settings_status = "已保存并应用。".to_string();
         }
+        Message::Backend(UiMsg::Pairing(event)) => match event {
+            client::p2p::PairEvent::Paired { name, .. } => {
+                state.pairing_error = false;
+                state.pairing_status = format!("已与「{name}」配对，可以开始同步了");
+                state.pairing_code = None;
+                state.pairing_handle = None;
+                state.pairing_busy = false;
+                state.pairing_input.clear();
+                state.reload_peers();
+            }
+            client::p2p::PairEvent::Failed(error) => {
+                state.pairing_error = true;
+                state.pairing_status = error;
+                state.pairing_code = None;
+                state.pairing_handle = None;
+                state.pairing_busy = false;
+            }
+        },
+        Message::Backend(UiMsg::ConnectionTested { ok, message }) => {
+            state.channel_test = message;
+            state.channel_test_ok = Some(ok);
+        }
         Message::Backend(UiMsg::ShowWindow) => {
             return show_window(state);
         }
@@ -379,6 +479,9 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
         }
         Message::SelectPanel(panel) => {
             state.panel = panel;
+            if panel == Panel::Device {
+                state.reload_peers();
+            }
         }
         Message::ToggleHistoryItem(seq) => {
             state.expanded_history = if state.expanded_history == Some(seq) {
@@ -402,49 +505,73 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
         Message::OpenConfigDir => {
             let _ = state.cmd_tx.send(UiCmd::OpenConfigDir);
         }
-        Message::SettingsSyncSwitch(on) => {
-            state.sync_switch_on = on;
-            state.settings_status = String::new();
-        }
-        Message::SettingsSyncPush(on) => {
-            state.sync_push_on = on;
-            state.settings_status = String::new();
-        }
-        Message::SettingsSyncPull(on) => {
-            state.sync_pull_on = on;
-            state.settings_status = String::new();
-        }
-        Message::SettingsSyncUploadText(on) => {
-            state.sync_upload_text = on;
-            state.settings_status = String::new();
-        }
-        Message::SettingsSyncUploadImage(on) => {
-            state.sync_upload_image = on;
-            state.settings_status = String::new();
-        }
-        Message::SettingsSyncUploadSingleFile(on) => {
-            state.sync_upload_single_file = on;
-            state.settings_status = String::new();
-        }
+        Message::SettingsSyncSwitch(on) => state.edit_sync(|s| s.switch_on = on),
+        Message::SettingsSyncPush(on) => state.edit_sync(|s| s.push_switch_on = on),
+        Message::SettingsSyncPull(on) => state.edit_sync(|s| s.pull_switch_on = on),
+        Message::SettingsSyncUploadText(on) => state.edit_sync(|s| s.upload_text = on),
+        Message::SettingsSyncUploadImage(on) => state.edit_sync(|s| s.upload_image = on),
+        Message::SettingsSyncUploadSingleFile(on) => state.edit_sync(|s| s.upload_single_file = on),
         Message::SettingsSyncMaxFileMb(v) => {
-            // 仅允许数字，非法输入忽略
+            // 中间态允许为空（用户清空重输），但只接受数字
             if v.is_empty() || v.parse::<u64>().is_ok() {
-                state.sync_max_file_mb = v;
-                state.settings_status = String::new();
+                state.max_file_mb = v;
+                state.settings_status.clear();
             }
         }
-        Message::SettingsSyncNotify(on) => {
-            state.sync_notify = on;
-            state.settings_status = String::new();
+        Message::SettingsSyncNotify(on) => state.edit_sync(|s| s.notify_on_downloaded = on),
+        Message::ChannelSelect(id) => {
+            state.selected_channel = id;
+            state.channel_test.clear();
+            state.channel_test_ok = None;
+        }
+        Message::ChannelToggle(id) => state.toggle_channel(&id),
+        Message::ChannelMoveUp(id) => state.move_channel(&id, true),
+        Message::ChannelMoveDown(id) => state.move_channel(&id, false),
+        Message::ChannelField { field, value } => state.edit_channel_field(field, value),
+        Message::TestConnection => state.test_connection(),
+        Message::DeviceName(name) => {
+            state.draft.p2p.device_name = name;
+            state.settings_status.clear();
+        }
+        Message::PairingStartDisplay => state.start_display_pairing(),
+        Message::PairingStartJoin => state.start_join_pairing(),
+        Message::PairingCancel => state.cancel_pairing(),
+        Message::PairingInput(code) => state.pairing_input = code,
+        Message::PairingTab(tab) => {
+            state.pairing_tab = tab.min(1);
+            state.pairing_status.clear();
+        }
+        Message::Tick => {
+            // 码 60 秒过期：到点自动停会话，避免界面显示一个已经作废的码
+            let expired = state
+                .pairing_handle
+                .as_ref()
+                .is_some_and(|handle| handle.remaining_secs() == 0);
+            if expired {
+                state.pairing_handle = None;
+                state.pairing_code = None;
+                state.pairing_busy = false;
+                state.pairing_status = "配对码已过期，请重新生成".to_string();
+                state.pairing_error = true;
+            }
+        }
+        Message::RemovePeer(did) => state.remove_peer(&did),
+        Message::HttpMode(mode) => {
+            state.draft.http.mode = mode;
+            state.settings_status.clear();
+        }
+        Message::HttpField { field, value } => {
+            match field {
+                HttpField::Url => state.draft.http.url = value,
+                HttpField::Username => state.draft.http.username = value,
+                HttpField::Password => {
+                    state.draft.http.password = Some(value).filter(|p| !p.is_empty())
+                }
+            }
+            state.settings_status.clear();
         }
         Message::ApplySettings => {
-            let cmd = UiCmd::ApplySettings(Box::new(ApplySettingsPayload {
-                mode: state.sync_mode,
-                remote_url: state.remote_url.clone(),
-                remote_username: state.remote_username.clone(),
-                remote_password: state.remote_password.clone(),
-                sync: state.sync_settings(),
-            }));
+            let cmd = UiCmd::ApplySettings(Box::new(state.saved_draft()));
             if state.cmd_tx.send(cmd).is_ok() {
                 state.settings_status = "正在保存并应用…".to_string();
             } else {
@@ -459,24 +586,229 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
 }
 
 impl UiState {
-    /// 把设置面板编辑态组装成 [`client::settings::SyncSettings`]。
-    /// 大小上限：MB 文本 → 字节（非法输入回退默认 10MB）。
-    fn sync_settings(&self) -> client::settings::SyncSettings {
-        let max_file_byte = self
-            .sync_max_file_mb
+    /// 修改同步内容草稿（任何改动都清掉「已保存」提示）。
+    fn edit_sync(&mut self, f: impl FnOnce(&mut client::settings::SyncSettings)) {
+        f(&mut self.draft.sync);
+        self.settings_status.clear();
+    }
+
+    /// 待保存的设置：把界面上的文本态（大小上限）折回字节，并规范化通道列表。
+    fn saved_draft(&self) -> AppSettings {
+        let mut draft = self.draft.clone();
+        draft.channels = draft.normalized_channels();
+        draft.sync.max_file_byte = self
+            .max_file_mb
             .parse::<u64>()
             .ok()
             .map(|mb| mb.saturating_mul(1024 * 1024))
-            .unwrap_or_else(|| 10 * 1024 * 1024);
-        client::settings::SyncSettings {
-            switch_on: self.sync_switch_on,
-            push_switch_on: self.sync_push_on,
-            pull_switch_on: self.sync_pull_on,
-            upload_text: self.sync_upload_text,
-            upload_image: self.sync_upload_image,
-            upload_single_file: self.sync_upload_single_file,
-            max_file_byte,
-            notify_on_downloaded: self.sync_notify,
+            .filter(|bytes| *bytes > 0)
+            .unwrap_or(10 * 1024 * 1024);
+        draft
+    }
+
+    /// 重新读取已配对设备表。
+    ///
+    /// 读失败时保留错误而不是展示空表：表里是用户建立的信任关系，显示「暂无设备」
+    /// 会让人误以为配对丢了。
+    fn reload_peers(&mut self) {
+        match client::p2p::peers(&self.config_dir) {
+            Ok(list) => {
+                self.device_peers = list;
+                self.device_error = None;
+            }
+            Err(e) => {
+                self.device_peers.clear();
+                self.device_error = Some(e);
+            }
+        }
+    }
+
+    /// 启用 / 停用通道（从优先级列表增删）。
+    fn toggle_channel(&mut self, id: &str) {
+        if let Some(pos) = self.draft.channels.iter().position(|c| c == id) {
+            if self.draft.channels.len() == 1 {
+                self.settings_status = "至少保留一条通道，否则同步无法启动。".to_string();
+                return;
+            }
+            self.draft.channels.remove(pos);
+            if self.selected_channel == id {
+                self.selected_channel = self.draft.channels.first().cloned().unwrap_or_default();
+            }
+        } else {
+            // 新加的通道放到最前：用户主动加一条通道，意图通常是「改用它」，
+            // 排到末尾会变成「配好了却没生效」——看起来像 bug。
+            self.draft.channels.insert(0, id.to_string());
+            self.selected_channel = id.to_string();
+        }
+        self.channel_test.clear();
+        self.channel_test_ok = None;
+        self.settings_status.clear();
+    }
+
+    /// 调整优先级（`up = true` 上移一位）。
+    fn move_channel(&mut self, id: &str, up: bool) {
+        let Some(pos) = self.draft.channels.iter().position(|c| c == id) else {
+            return;
+        };
+        let target = if up {
+            pos.checked_sub(1)
+        } else {
+            Some(pos + 1).filter(|next| *next < self.draft.channels.len())
+        };
+        let Some(target) = target else {
+            return;
+        };
+        self.draft.channels.swap(pos, target);
+        self.settings_status.clear();
+    }
+
+    /// 编辑通道参数。
+    fn edit_channel_field(&mut self, field: ChannelField, value: String) {
+        match field {
+            ChannelField::WebDavUrl => self.draft.webdav.url = value,
+            ChannelField::WebDavFile => self.draft.webdav.file = value,
+            ChannelField::WebDavUsername => self.draft.webdav.username = value,
+            ChannelField::WebDavPassword => {
+                self.draft.webdav.password = Some(value).filter(|p| !p.is_empty())
+            }
+            ChannelField::P2pName => self.draft.p2p.device_name = value,
+        }
+        self.channel_test.clear();
+        self.channel_test_ok = None;
+        self.settings_status.clear();
+    }
+
+    /// 测试当前选中通道。
+    ///
+    /// WebDAV 要发真实请求，放后台线程；局域网只查设备表（连接态由引擎维护），
+    /// 本机 HTTP 通道没有「独立可测」的端点。
+    fn test_connection(&mut self) {
+        let id = self.selected_channel.clone();
+        if id == client::channel::CHANNEL_P2P {
+            match client::p2p::peers(&self.config_dir) {
+                Ok(list) if list.is_empty() => {
+                    self.channel_test = "还没有配对设备，请先完成配对".to_string();
+                    self.channel_test_ok = Some(false);
+                }
+                Ok(list) => {
+                    self.channel_test = format!("已配对 {} 台设备", list.len());
+                    self.channel_test_ok = Some(true);
+                }
+                Err(e) => {
+                    self.channel_test = format!("设备表读取失败：{e}");
+                    self.channel_test_ok = Some(false);
+                }
+            }
+            return;
+        }
+        if id == client::channel::CHANNEL_HTTP {
+            self.channel_test = "HTTP 通道的后端是本机 server，运行状态见「概览」。".to_string();
+            self.channel_test_ok = Some(self.server_running || self.sync_online);
+            return;
+        }
+        self.channel_test = "正在测试…".to_string();
+        self.channel_test_ok = None;
+        let webdav = self.draft.webdav.clone();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let transport = client::webdav::WebDavTransport::new(&webdav);
+            let outcome = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt.block_on(transport.test_connection()),
+                Err(e) => Err(client::transport::TransportError::Connect(e.to_string())),
+            };
+            let (ok, message) = match outcome {
+                Ok(()) => (true, "连接成功".to_string()),
+                Err(e) => (false, format!("连接失败：{e}")),
+            };
+            let _ = tx.send(UiMsg::ConnectionTested { ok, message });
+        });
+    }
+
+    /// 生成显示码（本机作为显示端）。
+    fn start_display_pairing(&mut self) {
+        if self.pairing_busy {
+            return;
+        }
+        let base = self.config_dir.clone();
+        let name = self.device_name();
+        let tx = self.tx.clone();
+        self.pairing_busy = true;
+        self.pairing_tab = 0;
+        self.pairing_error = false;
+        self.pairing_status = "已生成配对码，请在对方设备上输入".to_string();
+        match client::p2p::start_display_pairing(&base, name, move |event| {
+            let _ = tx.send(UiMsg::Pairing(event));
+        }) {
+            Ok(handle) => {
+                self.pairing_code = Some(handle.code().to_string());
+                self.pairing_handle = Some(handle);
+            }
+            Err(e) => {
+                self.pairing_status = e;
+                self.pairing_error = true;
+                self.pairing_code = None;
+                self.pairing_busy = false;
+            }
+        }
+    }
+
+    /// 用对方的码配对（本机作为输入端）。
+    fn start_join_pairing(&mut self) {
+        if self.pairing_busy {
+            return;
+        }
+        let code = self.pairing_input.trim().to_string();
+        if code.is_empty() {
+            self.pairing_status = "请先输入对方屏幕上的配对码".to_string();
+            return;
+        }
+        let base = self.config_dir.clone();
+        let name = self.device_name();
+        let tx = self.tx.clone();
+        self.pairing_busy = true;
+        self.pairing_tab = 1;
+        self.pairing_error = false;
+        self.pairing_status = "正在寻找对方设备…".to_string();
+        if let Err(e) = client::p2p::start_join_pairing(&base, name, code, move |event| {
+            let _ = tx.send(UiMsg::Pairing(event));
+        }) {
+            self.pairing_status = e;
+            self.pairing_error = true;
+            self.pairing_busy = false;
+        }
+    }
+
+    /// 取消配对（同时释放配对端口）。
+    fn cancel_pairing(&mut self) {
+        if let Some(handle) = self.pairing_handle.take() {
+            handle.cancel();
+        }
+        self.pairing_code = None;
+        self.pairing_busy = false;
+        self.pairing_status = "已取消配对".to_string();
+    }
+
+    /// 移除已配对设备。
+    fn remove_peer(&mut self, did: &str) {
+        match client::p2p::remove_peer(&self.config_dir, did) {
+            Ok(_) => {
+                self.pairing_status = "已移除该设备，对方需要重新配对".to_string();
+                self.reload_peers();
+            }
+            Err(e) => self.pairing_status = format!("移除失败：{e}"),
+        }
+    }
+
+    /// 本机设备名（空则用主机名）。
+    fn device_name(&self) -> String {
+        let name = self.draft.p2p.device_name.trim();
+        if name.is_empty() {
+            client::config::hostname().unwrap_or_else(|| "ximed".to_string())
+        } else {
+            name.to_string()
         }
     }
 
@@ -516,10 +848,18 @@ fn hide_window(state: &UiState) -> Task<Message> {
 // ---------------------------------------------------------------------------
 
 /// 主题颜色常量（zinc 色阶 + indigo 强调色，贴近 Tailwind dark UI）。
-const BG: Color = Color::from_rgb8(0x0a, 0x0a, 0x0c); // 窗口底色 zinc-950
-const SURFACE: Color = Color::from_rgb8(0x15, 0x15, 0x18); // 卡片/侧栏 zinc-900
-const SURFACE_HOVER: Color = Color::from_rgb8(0x22, 0x22, 0x27); // 悬停 zinc-800
-const BORDER: Color = Color::from_rgb8(0x2a, 0x2a, 0x30); // 边框 zinc-800
+const BG: Color = Color::from_rgb8(0x09, 0x09, 0x0b); // 窗口底色 zinc-950
+const SURFACE: Color = Color::from_rgb8(0x14, 0x14, 0x17); // 卡片/侧栏 zinc-900
+const SURFACE_HOVER: Color = Color::from_rgb8(0x23, 0x23, 0x27); // 悬停 zinc-800
+const SURFACE_VARIANT: Color = Color::from_rgb8(0x23, 0x23, 0x27); // 输入框填充
+/// 分段控件轨道：比窗口底色再深一档，否则整条轨道和页面糊在一起。
+const TRACK: Color = Color::from_rgb8(0x26, 0x26, 0x2b);
+/// 分段控件选中项（药丸）底色。
+const TAB_ACTIVE: Color = Color::from_rgb8(0x3a, 0x3a, 0x41);
+/// 次要按钮底色：浮在页面和卡片上都要看得见，所以不用 surface。
+const CONTROL_BG: Color = Color::from_rgb8(0x21, 0x21, 0x26);
+const CONTROL_BORDER: Color = Color::from_rgb8(0x35, 0x35, 0x3c);
+const BORDER: Color = Color::from_rgb8(0x29, 0x29, 0x30); // 边框 zinc-800
 const BORDER_STRONG: Color = Color::from_rgb8(0x3f, 0x3f, 0x46); // 边框强调 zinc-700
 const TEXT_MAIN: Color = Color::from_rgb8(0xf4, 0xf4, 0xf5); // 主文本 zinc-100
 const TEXT_MUTED: Color = Color::from_rgb8(0xa1, 0xa1, 0xaa); // 次级文本 zinc-400
@@ -533,8 +873,11 @@ const RED: Color = Color::from_rgb8(0xfb, 0x71, 0x85); // 危险 rose-400
 const RED_DIM: Color = Color::from_rgba8(0xfb, 0x71, 0x85, 0.15);
 
 /// 圆角（Tailwind rounded-lg/xl）。
-const RADIUS_LG: f32 = 12.0;
-const RADIUS_MD: f32 = 10.0;
+const RADIUS_LG: f32 = 14.0;
+const RADIUS_MD: f32 = 12.0;
+const RADIUS_SM: f32 = 8.0;
+/// 控件统一高度：输入框、按钮、分段控件都按这一档排版，同一行不会高低错开。
+const CONTROL_HEIGHT: f32 = 36.0;
 
 /// 标题字体（semibold）。
 const SEMIBOLD: Font = Font {
@@ -542,7 +885,7 @@ const SEMIBOLD: Font = Font {
     ..Font::DEFAULT
 };
 
-/// 卡片容器样式：圆角 + 边框 + 柔和底色。
+/// 卡片容器样式：圆角 + 边框 + 柔和底色 + 极浅投影（深色底上靠不透明度代替）。
 fn card(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(SURFACE)),
@@ -551,6 +894,11 @@ fn card(_theme: &Theme) -> container::Style {
             color: BORDER,
             width: 1.0,
             radius: border::radius(RADIUS_LG),
+        },
+        shadow: iced::Shadow {
+            color: Color::from_rgba8(0x00, 0x00, 0x00, 0.45),
+            offset: iced::Vector::new(0.0, 1.0),
+            blur_radius: 3.0,
         },
         ..container::Style::default()
     }
@@ -644,14 +992,14 @@ fn stop_button(_theme: &Theme, status: button::Status) -> button::Style {
 fn secondary_button(_theme: &Theme, status: button::Status) -> button::Style {
     let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
     button::Style {
-        background: if hovered {
-            Some(Background::Color(SURFACE_HOVER))
+        background: Some(Background::Color(if hovered {
+            SURFACE_HOVER
         } else {
-            None
-        },
+            CONTROL_BG
+        })),
         text_color: TEXT_MAIN,
         border: Border {
-            color: BORDER_STRONG,
+            color: CONTROL_BORDER,
             width: 1.0,
             radius: border::radius(RADIUS_MD),
         },
@@ -680,16 +1028,16 @@ fn danger_button(_theme: &Theme, status: button::Status) -> button::Style {
 
 /// 危险描边按钮（小尺寸动作，如插件卸载）。
 fn input_style(_theme: &Theme, status: text_input::Status) -> text_input::Style {
-    let border_color = match status {
-        text_input::Status::Focused { .. } => ACCENT,
-        text_input::Status::Hovered => BORDER_STRONG,
-        _ => BORDER,
+    let (border_color, border_width) = match status {
+        text_input::Status::Focused { .. } => (ACCENT, 1.5),
+        text_input::Status::Hovered => (BORDER_STRONG, 1.0),
+        _ => (Color::TRANSPARENT, 1.0),
     };
     text_input::Style {
-        background: Background::Color(SURFACE),
+        background: Background::Color(SURFACE_VARIANT),
         border: Border {
             color: border_color,
-            width: 1.0,
+            width: border_width,
             radius: border::radius(RADIUS_MD),
         },
         icon: TEXT_MUTED,
@@ -704,31 +1052,25 @@ fn input_style(_theme: &Theme, status: text_input::Status) -> text_input::Style 
 // ---------------------------------------------------------------------------
 
 fn view(state: &UiState) -> Element<'_, Message> {
-    // 左分栏：品牌 + 面板导航
-    let mut nav = column![
-        brand(),
-        Space::new().height(20),
-        text("菜单").size(11).color(TEXT_FAINT),
-        Space::new().height(4),
-        nav_button("状态", Panel::Status, state.panel),
-        nav_button("剪贴板历史", Panel::History, state.panel),
-    ]
-    .spacing(2)
-    .padding([20, 14]);
-
-    // 同步面板仅 desktop 形态显示（client-only 无设置能力，同步全默认）
+    // 侧栏：品牌 + 分组标题 + 导航项（对齐 xime-setup 的 sidebar 结构）
+    let mut nav = column![brand(), Space::new().height(20)]
+        .spacing(2)
+        .padding([20, 14]);
+    nav = nav.push(nav_group("同步"));
+    nav = nav.push(nav_button("概览", Panel::Status, state.panel));
+    // 通道/设备/设置页需要写配置，仅 desktop 形态显示（client-only 无后台写入口）
     if state.local_server {
-        nav = nav.push(nav_button("同步", Panel::Sync, state.panel));
+        nav = nav.push(nav_button("同步通道", Panel::Sync, state.panel));
+        nav = nav.push(nav_button("设备", Panel::Device, state.panel));
     }
-
-    // 侧栏底部：退出
-    nav = nav.push(Space::new().height(Length::Fill));
-    nav = nav.push(
-        button(text("退出").color(RED))
-            .on_press(Message::Quit)
-            .width(Length::Fill)
-            .style(danger_button),
-    );
+    nav = nav.push(Space::new().height(12));
+    nav = nav.push(nav_group("记录"));
+    nav = nav.push(nav_button("剪贴板历史", Panel::History, state.panel));
+    if state.local_server {
+        nav = nav.push(Space::new().height(12));
+        nav = nav.push(nav_group("系统"));
+        nav = nav.push(nav_button("设置", Panel::Settings, state.panel));
+    }
 
     let sidebar = container(nav)
         .width(200)
@@ -737,9 +1079,11 @@ fn view(state: &UiState) -> Element<'_, Message> {
 
     // 右分栏：按面板渲染内容
     let content = match state.panel {
-        Panel::Status => status_view(state),
-        Panel::History => history_view(state),
+        Panel::Status => overview_view(state),
         Panel::Sync => sync_view(state),
+        Panel::Device => device_view(state),
+        Panel::History => history_view(state),
+        Panel::Settings => settings_view(state),
     };
     let content = container(content)
         .width(Length::Fill)
@@ -752,19 +1096,32 @@ fn view(state: &UiState) -> Element<'_, Message> {
         .into()
 }
 
+/// 侧栏分组标题。
+fn nav_group(title: &str) -> Element<'_, Message> {
+    container(
+        text(title.to_string())
+            .size(12)
+            .font(SEMIBOLD)
+            .color(TEXT_MUTED),
+    )
+    .width(Length::Fill)
+    .padding([0, 10])
+    .into()
+}
+
 /// 品牌区：应用图标 + 名称 + 副标题。
 fn brand() -> Element<'static, Message> {
     // 编译期嵌入应用图标（1024×1024 RGBA），与窗口图标同源。
     let logo = image(image::Handle::from_bytes(
         include_bytes!("../assets/icon.png").as_slice(),
     ))
-    .width(32)
-    .height(32);
+    .width(28)
+    .height(28);
     row![
         logo,
         column![
             text("ximed").size(15).font(SEMIBOLD).color(TEXT_MAIN),
-            text("剪贴板同步").size(11).color(TEXT_MUTED),
+            text("剪贴板同步").size(12).color(TEXT_MUTED),
         ]
         .spacing(1),
     ]
@@ -779,7 +1136,7 @@ fn nav_button(label: &str, panel: Panel, active: Panel) -> Element<'_, Message> 
         row![
             dot(is_active),
             text(label)
-                .size(13)
+                .size(14)
                 .font(if is_active { SEMIBOLD } else { Font::DEFAULT })
                 .color(if is_active { ACCENT } else { TEXT_MUTED }),
         ]
@@ -815,42 +1172,81 @@ fn dot(active: bool) -> Element<'static, Message> {
         .into()
 }
 
-fn status_view(state: &UiState) -> Element<'_, Message> {
-    let server_up = state.server_running;
-    let engine_up = state.engine_status.starts_with("engine running");
-    let server_value = if server_up {
-        format!("{} @ {}", state.server_status, state.server_url)
+fn overview_view(state: &UiState) -> Element<'_, Message> {
+    let primary = state
+        .draft
+        .channels
+        .first()
+        .map(|id| channel_label(id))
+        .unwrap_or_else(|| "未配置".to_string());
+    let primary_is_p2p = state
+        .draft
+        .channels
+        .first()
+        .is_some_and(|id| id == client::channel::CHANNEL_P2P);
+    let online = state.sync_online;
+    let connection_badge = if online {
+        badge("已连接", GREEN, GREEN_DIM)
     } else {
-        state.server_status.clone()
+        badge("未连接", RED, RED_DIM)
+    };
+    let connection_desc = if online {
+        "引擎当前可用"
+    } else if primary_is_p2p {
+        "没有在线设备：确认两台设备在同一网络，并已完成配对"
+    } else {
+        "检查通道参数，或换用其它通道"
     };
 
-    let info_card = container(
-        column![
-            card_title("服务与同步引擎"),
-            stat_row("服务器", server_value, server_up, server_hint(state)),
-            stat_row("设备", state.source.clone(), true, None),
-            stat_row("同步引擎", state.engine_status.clone(), engine_up, None),
-        ]
-        .spacing(10)
-        .padding(16),
-    )
-    .width(Length::Fill)
-    .style(card);
+    let items: Vec<Element<'_, Message>> = vec![
+        settings_item(
+            "当前通道",
+            Some("按「同步」页的优先级顺序，首个可用通道"),
+            badge(primary.clone(), ACCENT, ACCENT_DIM),
+        ),
+        settings_item("连接状态", Some(connection_desc), connection_badge),
+        settings_item(
+            "同步总开关",
+            Some("关闭时引擎空转，不推不拉"),
+            switch_control(state.draft.sync.switch_on, Message::SettingsSyncSwitch),
+        ),
+        settings_item(
+            "已配对设备",
+            Some("局域网直连的对端数量"),
+            text(format!("{} 台", state.device_peers.len()))
+                .size(13)
+                .color(TEXT_MUTED)
+                .into(),
+        ),
+        settings_item(
+            "本机设备",
+            Some("写入同步内容的来源标识"),
+            text(state.source.clone()).size(13).color(TEXT_MUTED).into(),
+        ),
+    ];
 
     let mut content = column![
-        panel_header("状态", "服务与同步引擎运行情况"),
-        Space::new().height(8),
-        info_card,
+        panel_header("概览", "同步是否通、谁在同步"),
+        settings_group("同步状态", None::<&str>, items),
     ]
-    .spacing(10);
+    .spacing(16);
 
-    // 服务器控制区：仅本地 server（desktop 形态 + 本地模式）显示；
-    // 远程模式 client 连远程 server，本地 server 控制无意义。
-    if state.local_server && state.sync_mode == SyncMode::Local {
+    // 服务器控制区：仅本机 server 通道启用时才有意义
+    let uses_local_server = state
+        .draft
+        .channels
+        .iter()
+        .any(|id| id == client::channel::CHANNEL_HTTP)
+        && state.draft.http.mode == SyncMode::Local;
+    if state.local_server && uses_local_server {
         content = content.push(server_controls(state));
     }
+    if !state.settings_status.is_empty() {
+        content = content.push(banner(&state.settings_status, Tone::Info));
+    }
     content = content.push(text(&state.config_dir).size(11).color(TEXT_FAINT));
-    scrollable(content)
+
+    container(scrollable(content).height(Length::Fill))
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
@@ -869,29 +1265,6 @@ fn panel_header<'a>(title: &'a str, subtitle: &'a str) -> Element<'a, Message> {
 /// 卡片标题。
 fn card_title<'a>(label: &'a str) -> Element<'a, Message> {
     text(label).size(14).font(SEMIBOLD).color(TEXT_MAIN).into()
-}
-
-/// 服务器状态行的括号提示（按 SyncMode）：
-///
-/// - 本地模式：server 未运行 → 提示点击「开启」。
-/// - 远程模式：连不上 → 提示远程不可用；已连接 → 绿色标注。
-fn server_hint(state: &UiState) -> Option<(String, Color)> {
-    match state.sync_mode {
-        SyncMode::Local => {
-            if state.server_running {
-                None
-            } else {
-                Some(("（未启动，请点击「开启」）".to_string(), RED))
-            }
-        }
-        SyncMode::Remote => {
-            if state.sync_online {
-                Some(("（已连接）".to_string(), GREEN))
-            } else {
-                Some(("（远程服务器不可用，请检查设置）".to_string(), RED))
-            }
-        }
-    }
 }
 
 /// 本地服务器控制卡片：开启 / 重启 / 关闭 + 打开配置文件目录。
@@ -990,47 +1363,6 @@ fn capsule<'a>(label: &'a str, ok: bool) -> Element<'a, Message> {
         ..container::Style::default()
     })
     .into()
-}
-
-/// 状态行：彩色圆点 + 标签 + 值 + 可选的括号提示（如「未启动，请点击开启」）。
-fn stat_row(
-    label: &'static str,
-    value: String,
-    ok: bool,
-    hint: Option<(String, Color)>,
-) -> Element<'static, Message> {
-    let mut content = row![
-        stat_dot(ok),
-        text(label)
-            .size(13)
-            .color(TEXT_MUTED)
-            .width(Length::Fixed(72.0)),
-        text(value).size(13).color(TEXT_MAIN),
-    ]
-    .spacing(6)
-    .align_y(Alignment::Center);
-    if let Some((hint, color)) = hint {
-        content = content.push(text(hint).size(12).color(color));
-    }
-    content.into()
-}
-
-/// 绿/红状态圆点。
-fn stat_dot(ok: bool) -> Element<'static, Message> {
-    let color = if ok { GREEN } else { RED };
-    container(text("").width(10).height(10))
-        .width(10)
-        .height(10)
-        .style(move |_| container::Style {
-            background: Some(Background::Color(color)),
-            border: Border {
-                color: Color::TRANSPARENT,
-                width: 0.0,
-                radius: border::radius(5.0),
-            },
-            ..container::Style::default()
-        })
-        .into()
 }
 
 /// 历史卡片内容区收起时的高度（3 行文本 ≈ 3 × 20px）。
@@ -1298,22 +1630,52 @@ fn format_time(unix: i64) -> String {
     }
 }
 
-/// 同步面板：同步方式（插件选择 + 插件配置表单）+ 同步开关 + 插件商店。
-///
-/// 同步配置完全由插件承载（getSettingsSchema 动态渲染表单，新增插件零硬编码）；
-/// 默认/远端路径走本地或远端 ximed server（daemon 配置能力），UI 仅暴露
-/// 「恢复默认（连接本机 server）」一键回退。
+// ---------------------------------------------------------------------------
+// 同步页：通道优先级 / 通道配置 / 同步内容
+// ---------------------------------------------------------------------------
+
 fn sync_view(state: &UiState) -> Element<'_, Message> {
-    let switch_card = container(sync_card_body(state))
-        .width(Length::Fill)
-        .padding(16)
-        .style(card);
+    let mut list = column![].spacing(8);
+    for (index, id) in state.draft.channels.iter().enumerate() {
+        list = list.push(channel_row(state, id, index));
+    }
+
+    let mut add_row = row![].spacing(8).align_y(Alignment::Center);
+    for id in [
+        client::channel::CHANNEL_P2P,
+        client::channel::CHANNEL_WEBDAV,
+    ] {
+        if !state.draft.channels.iter().any(|enabled| enabled == id) {
+            add_row = add_row.push(
+                button(text(format!("＋ {}", channel_label(id))))
+                    .on_press(Message::ChannelToggle(id.to_string()))
+                    .padding([6, 12])
+                    .style(secondary_button),
+            );
+        }
+    }
+
+    let channels_card = container(
+        column![
+            card_title("通道优先级"),
+            text("从上到下依次尝试：局域网直连掉线超过 10 秒会自动切到备用通道，恢复后自动切回。")
+                .size(11)
+                .color(TEXT_FAINT),
+            list,
+            add_row,
+        ]
+        .spacing(10)
+        .padding(16),
+    )
+    .width(Length::Fill)
+    .style(card);
 
     let body = column![
-        panel_header("同步", "同步开关与内容范围"),
+        panel_header("同步", "选通道、配通道、定范围"),
         Space::new().height(8),
-        switch_card,
-        Space::new().height(4),
+        channels_card,
+        channel_config_card(state),
+        sync_content_card(state),
         row![
             button("保存并应用")
                 .on_press(Message::ApplySettings)
@@ -1323,7 +1685,7 @@ fn sync_view(state: &UiState) -> Element<'_, Message> {
         .align_y(Alignment::Center),
         text(&state.settings_status).size(12).color(TEXT_MUTED),
     ]
-    .spacing(6);
+    .spacing(10);
 
     container(scrollable(body).height(Length::Fill))
         .width(Length::Fill)
@@ -1331,85 +1693,921 @@ fn sync_view(state: &UiState) -> Element<'_, Message> {
         .into()
 }
 
-fn sync_card_body(state: &UiState) -> Element<'_, Message> {
-    column![
-        card_title("同步"),
-        toggle_row(
+/// 通道行：名称 + 状态摘要 + 优先级标记 + 上移/下移/配置/移除。
+fn channel_row<'a>(state: &'a UiState, id: &'a str, index: usize) -> Element<'a, Message> {
+    let selected = state.selected_channel == id;
+    let priority = if index == 0 {
+        "首选".to_string()
+    } else {
+        format!("备用 {index}")
+    };
+
+    let mut actions = row![].spacing(6).align_y(Alignment::Center);
+    if index > 0 {
+        actions = actions.push(
+            button("↑")
+                .on_press(Message::ChannelMoveUp(id.to_string()))
+                .padding([4, 9])
+                .style(secondary_button),
+        );
+    }
+    if index + 1 < state.draft.channels.len() {
+        actions = actions.push(
+            button("↓")
+                .on_press(Message::ChannelMoveDown(id.to_string()))
+                .padding([4, 9])
+                .style(secondary_button),
+        );
+    }
+    actions = actions.push(
+        button(if selected { "配置中" } else { "配置" })
+            .on_press(Message::ChannelSelect(id.to_string()))
+            .padding([4, 10])
+            .style(if selected {
+                primary_button
+            } else {
+                secondary_button
+            }),
+    );
+    // 至少留一条通道：否则保存后引擎无通道可用，同步会静默停摆
+    if state.draft.channels.len() > 1 {
+        actions = actions.push(
+            button("移除")
+                .on_press(Message::ChannelToggle(id.to_string()))
+                .padding([4, 10])
+                .style(danger_button),
+        );
+    }
+
+    container(
+        row![
+            column![
+                text(channel_label(id))
+                    .size(13)
+                    .font(SEMIBOLD)
+                    .color(TEXT_MAIN),
+                text(channel_state_hint(state, id))
+                    .size(11)
+                    .color(TEXT_FAINT),
+            ]
+            .spacing(2)
+            .width(Length::Fill),
+            text(priority)
+                .size(11)
+                .color(if index == 0 { ACCENT } else { TEXT_MUTED }),
+            actions,
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .padding([8, 10])
+    .style(card)
+    .into()
+}
+
+/// 通道行的一行状态摘要（不查网络，只反映配置是否齐全）。
+fn channel_state_hint(state: &UiState, id: &str) -> String {
+    match client::channel::Channel::from_id(id) {
+        Some(client::channel::Channel::WebDav) => {
+            if state.draft.webdav.is_configured() {
+                format!("保存到 {}", state.draft.webdav.endpoint())
+            } else {
+                "尚未填写地址".to_string()
+            }
+        }
+        Some(client::channel::Channel::P2p) => {
+            if state.device_peers.is_empty() {
+                "还没有配对设备".to_string()
+            } else {
+                format!("已配对 {} 台设备", state.device_peers.len())
+            }
+        }
+        Some(client::channel::Channel::Http) => {
+            if state.draft.http.mode == SyncMode::Local {
+                format!("后台默认通道 · 本机 server {}", state.server_url)
+            } else if state.draft.http.url.is_empty() {
+                "尚未填写服务器地址".to_string()
+            } else {
+                state.draft.http.url.clone()
+            }
+        }
+        None => "未知通道".to_string(),
+    }
+}
+
+/// 选中通道的配置表单（对齐 setup 的 settings_group / settings_item 布局）。
+fn channel_config_card(state: &UiState) -> Element<'_, Message> {
+    let id = state.selected_channel.clone();
+    let channel = client::channel::Channel::from_id(&id);
+
+    let (title, description, items): (&str, &str, Vec<Element<'_, Message>>) = match channel {
+        Some(client::channel::Channel::WebDav) => (
+            "WebDAV",
+            "把剪贴板当作网盘上的一个 JSON 文件，最后写入者生效",
+            vec![
+                settings_item(
+                    "服务器地址",
+                    Some("WebDAV 目录，例如 https://dav.jianguoyun.com/dav/ximed"),
+                    text_control(
+                        &state.draft.webdav.url,
+                        "https://dav.jianguoyun.com/dav/ximed",
+                        move |value| Message::ChannelField {
+                            field: ChannelField::WebDavUrl,
+                            value,
+                        },
+                    ),
+                ),
+                settings_item(
+                    "文件名",
+                    Some("目录下的文件名，两台设备必须一致"),
+                    text_control(&state.draft.webdav.file, "clipboard.json", move |value| {
+                        Message::ChannelField {
+                            field: ChannelField::WebDavFile,
+                            value,
+                        }
+                    }),
+                ),
+                settings_item(
+                    "用户名",
+                    Some("留空表示匿名访问"),
+                    text_control(&state.draft.webdav.username, "", move |value| {
+                        Message::ChannelField {
+                            field: ChannelField::WebDavUsername,
+                            value,
+                        }
+                    }),
+                ),
+                settings_item(
+                    "密码",
+                    Some("也可以设置环境变量 XIMED_WEBDAV_PASSWORD"),
+                    password_control(
+                        state.draft.webdav.password.as_deref().unwrap_or_default(),
+                        "",
+                        move |value| Message::ChannelField {
+                            field: ChannelField::WebDavPassword,
+                            value,
+                        },
+                    ),
+                ),
+                test_item(state),
+            ],
+        ),
+        Some(client::channel::Channel::P2p) => {
+            let peers = if state.device_peers.is_empty() {
+                "尚未配对任何设备".to_string()
+            } else {
+                format!("已配对 {} 台设备", state.device_peers.len())
+            };
+            (
+                "局域网直连",
+                "两台设备在同一网络时直接传输，不经过任何服务器",
+                vec![
+                    settings_item(
+                        "设备名",
+                        Some("对方在配对时看到的名字，例如「办公室 Mac」"),
+                        text_control(
+                            &state.draft.p2p.device_name,
+                            &state.source,
+                            Message::DeviceName,
+                        ),
+                    ),
+                    settings_item(
+                        "已配对设备",
+                        Some(&peers),
+                        button("去配对…")
+                            .on_press(Message::SelectPanel(Panel::Device))
+                            .padding([8, 14])
+                            .style(secondary_button)
+                            .into(),
+                    ),
+                    test_item(state),
+                ],
+            )
+        }
+        Some(client::channel::Channel::Http) => (
+            "HTTP 服务",
+            "连接 ximed server（本机或自建 hub），参数在「设置 · 高级」里维护",
+            vec![settings_item(
+                "服务端",
+                Some("本机 server 跟随桌面进程启动；远程 server 需填地址与账号"),
+                button("前往设置")
+                    .on_press(Message::SelectPanel(Panel::Settings))
+                    .padding([8, 14])
+                    .style(secondary_button)
+                    .into(),
+            )],
+        ),
+        None => (
+            "未知通道",
+            "保存时会被自动移除",
+            vec![banner("配置里出现了无法识别的通道 id", Tone::Error)],
+        ),
+    };
+
+    settings_group(title, Some(description), items)
+}
+
+/// 「测试连接」条目：WebDAV 与局域网都能独立探测，HTTP 由概览页显示状态。
+fn test_item(state: &UiState) -> Element<'_, Message> {
+    let mut control = row![].spacing(10).align_y(Alignment::Center);
+    let needs_config = state.selected_channel == client::channel::CHANNEL_WEBDAV
+        && !state.draft.webdav.is_configured();
+    if needs_config {
+        control = control.push(text("先填写服务器地址").size(12).color(TEXT_FAINT));
+    } else {
+        control = control.push(
+            button("测试连接")
+                .on_press(Message::TestConnection)
+                .padding([8, 14])
+                .style(secondary_button),
+        );
+    }
+    if !state.channel_test.is_empty() {
+        control = control.push(text(&state.channel_test).size(12).color(
+            match state.channel_test_ok {
+                Some(true) => GREEN,
+                Some(false) => RED,
+                None => TEXT_MUTED,
+            },
+        ));
+    }
+    settings_item(
+        "连通性",
+        Some("只验证配置能否连上，不会立即同步"),
+        control.into(),
+    )
+}
+
+/// 同步内容：开关 + 白名单 + 大小上限 + 通知。
+fn sync_content_card(state: &UiState) -> Element<'_, Message> {
+    let items: Vec<Element<'_, Message>> = vec![
+        toggle_item(
             "同步总开关",
-            state.sync_switch_on,
+            Some("关闭时引擎空转，不推不拉"),
+            state.draft.sync.switch_on,
             Message::SettingsSyncSwitch,
-            "关闭时引擎空转，不推不拉。",
         ),
-        toggle_row(
-            "推送（本地 → 服务器）",
-            state.sync_push_on,
+        toggle_item(
+            "推送",
+            Some("本机剪贴板变化时上传"),
+            state.draft.sync.push_switch_on,
             Message::SettingsSyncPush,
-            "本地剪贴板变化时上传到服务器。",
         ),
-        toggle_row(
-            "拉取（服务器 → 本地）",
-            state.sync_pull_on,
+        toggle_item(
+            "拉取",
+            Some("远端内容变化时下载并写回本机"),
+            state.draft.sync.pull_switch_on,
             Message::SettingsSyncPull,
-            "服务器内容变化时下载写回本地。",
         ),
-        Space::new().height(4),
-        text("上传白名单").size(12).color(TEXT_MUTED),
-        toggle_row(
+        settings_item(
             "文本",
-            state.sync_upload_text,
-            Message::SettingsSyncUploadText,
-            ""
+            Some("纯文本剪贴板"),
+            switch_control(
+                state.draft.sync.upload_text,
+                Message::SettingsSyncUploadText,
+            ),
         ),
-        toggle_row(
+        settings_item(
             "图片",
-            state.sync_upload_image,
-            Message::SettingsSyncUploadImage,
-            "框架预留：引擎当前仅同步文本。",
+            Some("局域网通道单帧上限 1 MiB，大图可能发不出去"),
+            switch_control(
+                state.draft.sync.upload_image,
+                Message::SettingsSyncUploadImage,
+            ),
         ),
-        toggle_row(
+        settings_item(
             "单个文件",
-            state.sync_upload_single_file,
-            Message::SettingsSyncUploadSingleFile,
-            "框架预留：引擎当前仅同步文本。",
+            Some("引擎当前只同步文本与图片"),
+            switch_control(
+                state.draft.sync.upload_single_file,
+                Message::SettingsSyncUploadSingleFile,
+            ),
         ),
-        Space::new().height(4),
-        field_label("上传大小上限（MB）"),
-        TextInput::new("10", &state.sync_max_file_mb)
-            .on_input(Message::SettingsSyncMaxFileMb)
-            .padding(10)
-            .style(input_style),
-        Space::new().height(4),
-        toggle_row(
-            "收到远端内容时通知",
-            state.sync_notify,
+        settings_item(
+            "大小上限（MB）",
+            Some("超过此大小的内容不上传"),
+            TextInput::new("10", &state.max_file_mb)
+                .on_input(Message::SettingsSyncMaxFileMb)
+                .padding([8, 10])
+                .style(input_style)
+                .width(Length::Fixed(120.0))
+                .into(),
+        ),
+        toggle_item(
+            "收到内容时通知",
+            Some("下载到新内容时提示来源设备"),
+            state.draft.sync.notify_on_downloaded,
             Message::SettingsSyncNotify,
-            "下载到新内容时提示来源设备。",
         ),
+    ];
+    settings_group("同步内容", Some("推送 / 拉取方向与白名单"), items)
+}
+
+// ---------------------------------------------------------------------------
+// 设备页：本机身份 / 配对 / 已配对设备
+// ---------------------------------------------------------------------------
+
+fn device_view(state: &UiState) -> Element<'_, Message> {
+    let did = client::p2p::local_did()
+        .map(|d| short_did(&d))
+        .unwrap_or_else(|| "节点未启动".to_string());
+    let port = client::p2p::local_port()
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| "—".to_string());
+
+    let identity = settings_group(
+        "本机",
+        Some("设备名只用来让对方认出这台机器，随时可以改"),
+        vec![
+            settings_item(
+                "设备名",
+                Some("建议写清是哪台机器，例如「办公室 Mac」"),
+                text_control(
+                    &state.draft.p2p.device_name,
+                    &state.source,
+                    Message::DeviceName,
+                ),
+            ),
+            settings_item(
+                "设备标识",
+                Some("由本机密钥派生，两台设备可对照确认是同一台机器"),
+                text(did).size(13).color(TEXT_MUTED).into(),
+            ),
+            settings_item(
+                "监听端口",
+                Some("配对期间会暂停节点（与同步抢同一组端口），结束后自动恢复"),
+                text(port).size(13).color(TEXT_MUTED).into(),
+            ),
+        ],
+    );
+
+    let mut pair_items: Vec<Element<'_, Message>> = vec![tab_bar(
+        &["显示配对码", "输入配对码"],
+        state.pairing_tab,
+        Message::PairingTab,
+    )];
+    // 另一个方向还在跑时提示：否则用户会以为点了没生效，反复点，既占端口又更慌
+    if state.pairing_tab == 1 && state.pairing_code.is_some() {
+        pair_items.push(banner(
+            "本机正在等待配对，切到「显示配对码」可查看",
+            Tone::Info,
+        ));
+    }
+    pair_items.push(if state.pairing_tab == 0 {
+        display_block(state)
+    } else {
+        join_block(state)
+    });
+    if !state.pairing_status.is_empty() {
+        pair_items.push(banner(
+            &state.pairing_status,
+            if state.pairing_error {
+                Tone::Error
+            } else {
+                Tone::Info
+            },
+        ));
+    }
+
+    let pairing = settings_group(
+        "配对",
+        Some("两台设备连同一个网络：一台显示 6 位数字，另一台输入即可。全程不经过任何服务器"),
+        pair_items,
+    );
+
+    let mut peer_items: Vec<Element<'_, Message>> = Vec::new();
+    if let Some(error) = &state.device_error {
+        let message = format!("设备表读取失败：{error}");
+        peer_items.push(banner(message.clone(), Tone::Error));
+    }
+    if state.device_peers.is_empty() && state.device_error.is_none() {
+        peer_items.push(settings_item(
+            "暂无已配对设备",
+            Some("完成一次配对后，设备会出现在这里；移除后需要重新配对"),
+            text("").into(),
+        ));
+    }
+    for peer in &state.device_peers {
+        let desc = match &peer.last_addr {
+            Some(addr) => format!("{} · 最近地址 {addr}", short_did(&peer.did)),
+            None => format!("{} · 尚未连接过", short_did(&peer.did)),
+        };
+        peer_items.push(settings_item(
+            &peer.name,
+            Some(desc),
+            button("移除")
+                .on_press(Message::RemovePeer(peer.did.clone()))
+                .padding([6, 12])
+                .style(secondary_button)
+                .into(),
+        ));
+    }
+    let peers = settings_group(
+        "已配对设备",
+        Some("剪贴板只在这些设备之间同步；移除后需要重新配对"),
+        peer_items,
+    );
+
+    let body = column![
+        panel_header("设备", "局域网直连的配对与设备管理"),
+        identity,
+        pairing,
+        peers,
+        text("连不上时先确认两台设备在同一网络；跨网络请改用 WebDAV 通道。")
+            .size(11)
+            .color(TEXT_FAINT),
+    ]
+    .spacing(16);
+
+    container(scrollable(body).height(Length::Fill))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+/// 显示端：未生成时是一行入口，生成后是码 + 倒计时。
+fn display_block(state: &UiState) -> Element<'_, Message> {
+    let Some(code) = &state.pairing_code else {
+        return row![
+            column![
+                text("由这台设备显示配对码")
+                    .size(14)
+                    .font(SEMIBOLD)
+                    .color(TEXT_MAIN),
+                text("生成后 60 秒内，在另一台设备上输入")
+                    .size(12)
+                    .color(TEXT_MUTED),
+            ]
+            .spacing(4)
+            .width(Length::Fill),
+            button("生成配对码")
+                .on_press(Message::PairingStartDisplay)
+                .padding([9, 16])
+                .style(primary_button),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center)
+        .into();
+    };
+
+    let remaining = state
+        .pairing_handle
+        .as_ref()
+        .map(|handle| handle.remaining_secs())
+        .unwrap_or(0);
+    let ratio = state
+        .pairing_handle
+        .as_ref()
+        .map(|handle| handle.remaining_ratio())
+        .unwrap_or(0.0);
+    let countdown: Element<'_, Message> = if remaining == 0 {
+        text("已过期，请重新生成").size(13).color(RED).into()
+    } else {
+        text(format!("剩余 {remaining} 秒"))
+            .size(13)
+            .color(TEXT_MUTED)
+            .into()
+    };
+
+    column![
+        text("在另一台设备上输入这组码").size(13).color(TEXT_MUTED),
+        text(code).size(34).font(SEMIBOLD).color(ACCENT),
+        progress_line(ratio),
+        row![
+            countdown,
+            Space::new().width(Length::Fill),
+            button("换一个")
+                .on_press(Message::PairingCancel)
+                .padding([6, 12])
+                .style(secondary_button),
+            button("取消")
+                .on_press(Message::PairingCancel)
+                .padding([6, 12])
+                .style(secondary_button),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+    ]
+    .spacing(10)
+    .into()
+}
+
+/// 输入端：码输入框 + 配对按钮。
+fn join_block(state: &UiState) -> Element<'_, Message> {
+    let input = TextInput::new("例如 482 719", &state.pairing_input)
+        .on_input(Message::PairingInput)
+        .padding([8, 10])
+        .style(input_style)
+        .width(Length::Fixed(160.0));
+    let action: Element<'_, Message> = if state.pairing_busy {
+        button("正在查找设备…")
+            .padding([9, 16])
+            .style(secondary_button)
+            .into()
+    } else {
+        button("配对")
+            .on_press(Message::PairingStartJoin)
+            .padding([9, 16])
+            .style(primary_button)
+            .into()
+    };
+
+    column![
+        text("在这台设备上输入配对码")
+            .size(14)
+            .font(SEMIBOLD)
+            .color(TEXT_MAIN),
+        row![input, action].spacing(8).align_y(Alignment::Center),
+        text("填另一台设备上显示的 6 位数字，会自动在同一网络下找到对方，最长等 60 秒")
+            .size(12)
+            .color(TEXT_FAINT),
     ]
     .spacing(8)
     .into()
 }
 
-/// 开关行：label + toggler + 说明文本。
-fn toggle_row<'a>(
-    label: &'a str,
-    checked: bool,
-    on_toggle: impl Fn(bool) -> Message + 'a,
-    hint: &'a str,
-) -> Element<'a, Message> {
-    let t = toggler(checked).label(label).on_toggle(on_toggle);
-    if hint.is_empty() {
-        t.into()
+// ---------------------------------------------------------------------------
+// 设置页：数据目录 / 高级 HTTP 通道 / 关于
+// ---------------------------------------------------------------------------
+
+fn settings_view(state: &UiState) -> Element<'_, Message> {
+    let general = settings_group(
+        "通用",
+        Some("配置文件与历史记录都在这个目录"),
+        vec![
+            settings_item(
+                "数据目录",
+                Some(state.config_dir.clone()),
+                button("打开")
+                    .on_press(Message::OpenConfigDir)
+                    .padding([6, 12])
+                    .style(secondary_button)
+                    .into(),
+            ),
+            settings_item(
+                "开机自启",
+                Some("尚未实现（需要各平台分别注册）"),
+                text("未支持").size(13).color(TEXT_FAINT).into(),
+            ),
+        ],
+    );
+
+    let mode = if state.draft.http.mode == SyncMode::Local {
+        0
     } else {
-        column![t, text(hint).size(11).color(TEXT_FAINT)]
-            .spacing(2)
-            .into()
+        1
+    };
+    let mut http_items: Vec<Element<'_, Message>> = vec![
+        tab_bar(&["本机服务器", "远程服务器"], mode, |index| {
+            Message::HttpMode(if index == 0 {
+                SyncMode::Local
+            } else {
+                SyncMode::Remote
+            })
+        }),
+        settings_item(
+            "说明",
+            Some("HTTP 通道默认不出现在同步页，需要时在通道列表里添加"),
+            text("").into(),
+        ),
+    ];
+    if state.draft.http.mode == SyncMode::Remote {
+        http_items.push(settings_item(
+            "服务器地址",
+            Some("自建 hub 或公网 server"),
+            text_control(
+                &state.draft.http.url,
+                "https://hub.example.com",
+                move |value| Message::HttpField {
+                    field: HttpField::Url,
+                    value,
+                },
+            ),
+        ));
+        http_items.push(settings_item(
+            "用户名",
+            Some("Basic Auth 用户名"),
+            text_control(&state.draft.http.username, "", move |value| {
+                Message::HttpField {
+                    field: HttpField::Username,
+                    value,
+                }
+            }),
+        ));
+        http_items.push(settings_item(
+            "密码",
+            Some("明文保存；也可用环境变量注入"),
+            password_control(
+                state.draft.http.password.as_deref().unwrap_or_default(),
+                "",
+                move |value| Message::HttpField {
+                    field: HttpField::Password,
+                    value,
+                },
+            ),
+        ));
+    } else {
+        http_items.push(settings_item(
+            "本机地址",
+            Some("随 server 配置自动推导，无需手填"),
+            text(state.server_url.clone())
+                .size(13)
+                .color(TEXT_MUTED)
+                .into(),
+        ));
     }
+    let http = settings_group("高级 · HTTP 通道", Some("连接 ximed server"), http_items);
+
+    let about = settings_group(
+        "关于",
+        None::<&str>,
+        vec![
+            settings_item(
+                "版本",
+                Some("当前构建"),
+                text(env!("CARGO_PKG_VERSION"))
+                    .size(13)
+                    .color(TEXT_MUTED)
+                    .into(),
+            ),
+            settings_item(
+                "同步协议",
+                Some("与 XimeYi / Android 共用通道语义"),
+                text("ximed sync v1").size(13).color(TEXT_MUTED).into(),
+            ),
+        ],
+    );
+
+    let body = column![
+        panel_header("设置", "数据目录、服务端连接与版本信息"),
+        general,
+        http,
+        about,
+        row![
+            button("保存并应用")
+                .on_press(Message::ApplySettings)
+                .padding([9, 16])
+                .style(primary_button),
+        ],
+        text(&state.settings_status).size(12).color(TEXT_MUTED),
+    ]
+    .spacing(16);
+
+    container(scrollable(body).height(Length::Fill))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
 }
 
-/// 设置表单字段标签。
-fn field_label<'a>(label: &'a str) -> Element<'a, Message> {
-    text(label).size(12).color(TEXT_MUTED).into()
+// ---------------------------------------------------------------------------
+// 组件：对齐 libximecore/xime-setup 的组件词汇
+// （settings_group / settings_item / tab_bar / badge / banner / switch）
+// ---------------------------------------------------------------------------
+
+/// 设置分组卡片：标题 + 可选描述 + 条目。
+fn settings_group<'a>(
+    title: &'a str,
+    description: Option<impl Into<String>>,
+    items: Vec<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    let mut body = column![text(title).size(16).font(SEMIBOLD).color(TEXT_MAIN)]
+        .spacing(8)
+        .width(Length::Fill);
+    if let Some(desc) = description {
+        body = body.push(text(desc.into()).size(13).color(TEXT_MUTED));
+    }
+    for item in items {
+        body = body.push(item);
+    }
+    container(body)
+        .width(Length::Fill)
+        .padding(18)
+        .style(card)
+        .into()
+}
+
+/// 设置条目：左侧 label + 描述，右侧控件。
+fn settings_item<'a>(
+    label: &'a str,
+    description: Option<impl Into<String>>,
+    control: Element<'a, Message>,
+) -> Element<'a, Message> {
+    let mut left = column![text(label).size(14).color(TEXT_MAIN)]
+        .spacing(4)
+        .width(Length::Fill);
+    if let Some(desc) = description {
+        left = left.push(text(desc.into()).size(12).color(TEXT_MUTED));
+    }
+    row![left, control]
+        .spacing(12)
+        .align_y(Alignment::Center)
+        .padding([12, 4])
+        .width(Length::Fill)
+        .into()
+}
+
+/// 开关条目（label + 描述 + 右置开关）。
+fn toggle_item<'a>(
+    label: &'a str,
+    description: Option<&'a str>,
+    checked: bool,
+    on_toggle: impl Fn(bool) -> Message + 'a,
+) -> Element<'a, Message> {
+    settings_item(
+        label,
+        description.map(|d| d.to_string()),
+        switch_control(checked, on_toggle),
+    )
+}
+
+/// 开关控件：轨道用主色 / 边框色，圆角胶囊（iced 默认配色与自定义主题不同源）。
+fn switch_control<'a>(on: bool, on_toggle: impl Fn(bool) -> Message + 'a) -> Element<'a, Message> {
+    toggler(on)
+        .on_toggle(on_toggle)
+        .style(move |_theme, _status| iced::widget::toggler::Style {
+            background: Background::Color(if on { ACCENT } else { BORDER_STRONG }),
+            background_border_width: 0.0,
+            background_border_color: Color::TRANSPARENT,
+            foreground: Background::Color(Color::WHITE),
+            foreground_border_width: 0.0,
+            foreground_border_color: Color::TRANSPARENT,
+            text_color: Some(TEXT_MAIN),
+            border_radius: Some(border::radius(999.0)),
+            padding_ratio: 0.15,
+        })
+        .into()
+}
+
+/// 分段控件（tab bar）：等宽标签 + 药丸选中项，轨道比页面深一档。
+fn tab_bar<'a>(
+    labels: &[&'a str],
+    active: usize,
+    on_select: impl Fn(usize) -> Message + 'a,
+) -> Element<'a, Message> {
+    let mut bar = row![].spacing(2).padding(3);
+    let cell = labels
+        .iter()
+        .map(|label| label.chars().count())
+        .max()
+        .unwrap_or(1) as f32
+        * 14.0
+        + 32.0;
+
+    for (index, label) in labels.iter().enumerate() {
+        let is_active = index == active;
+        let label = *label;
+        bar = bar.push(
+            button(
+                container(
+                    text(label)
+                        .size(13)
+                        .color(if is_active { ACCENT } else { TEXT_MUTED }),
+                )
+                .height(Length::Fill)
+                .center_y(Length::Fill),
+            )
+            .padding([0, 12])
+            .width(Length::Fixed(cell))
+            .height(Length::Fixed(CONTROL_HEIGHT - 6.0))
+            .style(move |_theme, status| {
+                let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+                let background = if is_active {
+                    Some(Background::Color(TAB_ACTIVE))
+                } else if hovered {
+                    Some(Background::Color(SURFACE_HOVER))
+                } else {
+                    None
+                };
+                button::Style {
+                    background,
+                    text_color: if is_active { ACCENT } else { TEXT_MUTED },
+                    border: Border {
+                        color: Color::TRANSPARENT,
+                        width: 0.0,
+                        radius: border::radius(RADIUS_SM),
+                    },
+                    ..button::Style::default()
+                }
+            })
+            .on_press(on_select(index)),
+        );
+    }
+
+    container(bar)
+        .width(Length::Shrink)
+        .style(|_| container::Style {
+            background: Some(Background::Color(TRACK)),
+            border: Border {
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: border::radius(RADIUS_MD),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// 状态胶囊。
+fn badge<'a>(label: impl Into<String>, fg: Color, bg: Color) -> Element<'a, Message> {
+    container(text(label.into()).size(12).color(fg))
+        .padding([3, 10])
+        .style(move |_| container::Style {
+            background: Some(Background::Color(bg)),
+            border: Border {
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: border::radius(999.0),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// 提示条色调。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tone {
+    Info,
+    Error,
+}
+
+/// 提示条：进行中用主色，失败用错误色。不抢标题的视觉权重。
+fn banner<'a>(message: impl Into<String>, tone: Tone) -> Element<'a, Message> {
+    let accent = match tone {
+        Tone::Info => ACCENT,
+        Tone::Error => RED,
+    };
+    container(text(message.into()).size(13).color(accent))
+        .width(Length::Fill)
+        .padding([10, 14])
+        .style(move |_| container::Style {
+            background: Some(Background::Color(accent.scale_alpha(0.10))),
+            border: Border {
+                color: accent.scale_alpha(0.35),
+                width: 1.0,
+                radius: border::radius(RADIUS_SM),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// 细进度条（配对码倒计时）：卡片里的一行信息，不抢标题的视觉权重。
+fn progress_line(value: f32) -> Element<'static, Message> {
+    iced::widget::progress_bar(0.0..=1.0, value.clamp(0.0, 1.0))
+        .length(Length::Fill)
+        .girth(Length::Fixed(6.0))
+        .style(|_theme| iced::widget::progress_bar::Style {
+            background: Background::Color(SURFACE_VARIANT),
+            bar: Background::Color(ACCENT),
+            border: Border {
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: border::radius(999.0),
+            },
+        })
+        .into()
+}
+
+/// 通道 id → 展示名。
+fn channel_label(id: &str) -> String {
+    client::channel::Channel::from_id(id)
+        .map(|channel| channel.display_name().to_string())
+        .unwrap_or_else(|| id.to_string())
+}
+
+/// 设备标识短码（前 8 位）：完整 did 是 32 位 hex，界面上一行放不下。
+fn short_did(did: &str) -> String {
+    did.chars().take(8).collect()
+}
+
+/// 行内文本输入（宽度固定，配合 settings_item 右置）。
+fn text_control<'a>(
+    value: &'a str,
+    placeholder: &'a str,
+    on_input: impl Fn(String) -> Message + 'a,
+) -> Element<'a, Message> {
+    TextInput::new(placeholder, value)
+        .on_input(on_input)
+        .padding([8, 10])
+        .style(input_style)
+        .width(Length::Fixed(300.0))
+        .into()
+}
+
+/// 行内密码输入。
+fn password_control<'a>(
+    value: &'a str,
+    placeholder: &'a str,
+    on_input: impl Fn(String) -> Message + 'a,
+) -> Element<'a, Message> {
+    TextInput::new(placeholder, value)
+        .secure(true)
+        .on_input(on_input)
+        .padding([8, 10])
+        .style(input_style)
+        .width(Length::Fixed(300.0))
+        .into()
 }
 
 #[derive(Clone)]

@@ -1,54 +1,53 @@
 # PROGRESS
 
-> 更新：2026-11-10 · 阶段：桌面重构 R0/R1 + 插件体系移除完成；R2 界面重构待做
+> 更新：2026-11-10 · 阶段：桌面重构 R2/R3 完成（五页信息架构 + 三通道接线 + P2P 配对）
 
 ## 当前状态
 
-- **插件体系移除（本次，决策 16）**：`client/src/plugin/`（1043 行）整体删除，
-  `plugin` feature、xime-plugin/serde_yaml/sha2/hex/zip 依赖、`AdapterKind`、
-  `AppSettings::{adapter,plugin_id}`、桌面插件列表/动态表单/商店与 8 个
-  `UiMsg`/`UiCmd` 全部移除；`xime-plugin` 的 `bdaff98` pin 债一并解除。
-  旧配置的 `adapter`/`plugin_id` 被 serde 忽略，回落默认 HTTP 通道。
-  workspace check（默认 / `--no-default-features` / `client --features p2p`）全绿，
-  59 项测试通过，clippy/fmt 干净
-- **R1 WebDAV 原生通道（上次，5a7a20f）**：`client/src/webdav.rs`（PUT/GET 单文件 +
-  `test_connection` PROPFIND 打目录），`WebDavSettings`，5 项测试含自建 mock WebDAV 端到端
-- **R0 通道策略（5a7a20f）**：`client/src/channel.rs` 有序通道列表 + 健康窗口 +
-  `decide()`（仅 p2p 参与健康判定），8 项策略测试
-- **P1 设备层（d520929）**：新增 `client/src/p2p.rs`（feature `p2p`，默认关）——节点进程级
-  单例（`OnceLock<Mutex<Option<Node>>>`）+ 数据目录 `<base>/p2p/{identity.bin,peers.json}`
-  + 连接态（由 `Event::Peer` 维护，供 UI 与 push 判定）+ 已配对设备读取（表损坏报错、
-  不回落空表）。4 个单测覆盖幂等启动/端口可读/投递不阻塞/设备表语义；三种 feature
-  组合 check 全绿 + clippy 干净（详见决策 15）
-- **P0 依赖迁移（上次，已提交 fdf929a）**：domain 从 libximecore 改到 libximep2p（pin
-  `b19ecde`，与 libximecore / XimeYi 同源，避免两个 `Profile` 类型）；`.cargo/config.toml`
-  拆成两段 patch；xime-plugin 临时 pin `bdaff98`（mlua 时代最后 rev，上游已迁 quickjs）；
-  client `config` 下限抬到 0.15.27。仓库恢复可构建：`cargo check --workspace`（默认
-  与 `--no-default-features`）双绿、`cargo test --workspace` 50 项全过、fmt 干净
-- **同步模型收敛（更早）**：按决策 13，删除三套 WebDAV 实现中的两套——server 端 `xime-sync-store` WebDAV 存储后端（webdav feature/WebDavStorage/build_storage 工厂，server 直用 LocalStorage，`[storage]` 配置节删除）、client 直连 WebDAV/S3 适配器（`AdapterKind::{WebDav,S3}`/`direct` 模块/SigV4/4 个 TCP mock 端到端测试）；`hmac` 依赖删除，`sha2/hex` 改为 plugin feature 可选（仅商店校验）。保留两条路径：默认 server（本机/远端 hub）与插件（云端直达，商店承载）
+- **R3 局域网直连接线 + 配对页（本次）**：`P2pTransport`（`push`→`set_clipboard`、`pull`→
+  `Ok(None)`、`next_event`→非阻塞 `poll` 轮询）+ `client::p2p::{start_display_pairing,
+  start_join_pairing, remove_peer, local_port}`。配对前 `shutdown()` 让出 47821/47822
+  端口、结束后按原状态重启（配对与常驻节点抢同一组端口，且监听都没 `SO_REUSEADDR`）。
+  设备页 = 本机身份 / 配对（分段控件「显示码 / 输入码」+ 60 秒倒计时进度条）/ 已配对设备
+- **R2 桌面界面重构（本次）**：侧栏五页（概览 / 同步通道 / 设备 / 历史 / 设置）。
+  `UiState` 的 20 多个平行字段收敛成一份 `AppSettings` 草稿（编辑态与已保存态分离）；
+  `Panel::{Status,Sync,Device,History,Settings}`；视觉组件对齐
+  `libximecore/xime-setup`：`settings_group` / `settings_item` / `tab_bar` / `badge` /
+  `banner` / 主题化 `toggler` / 卡片投影 / 统一控件高度；侧栏改成分组式
+- **R2a 通道模型与配置迁移（本次）**：`Channel` 收敛为 http/webdav/p2p 三个内置通道
+  （删除插件残留变体与宽松解析）；新增 `client/src/router.rs`（`Router` 实现 `Transport`，
+  每轮按 `channel::decide` 复核并切换，切换对引擎透明）；`make_transport` 按
+  `channels` 列表装配、跳过不可用通道、全空退回 HTTP。`AppSettings` 改为
+  `channels` + `[http]` + `[webdav]` + `[p2p]` + `[sync]`，旧扁平 `mode`/`remote_*`
+  自动迁移，未知通道/空列表规范化
+- **插件体系移除（上次，1646360，决策 16）**：client 插件模块/feature/依赖、`AdapterKind`、
+  桌面插件 UI 与 8 个消息全部删除；旧配置字段被 serde 忽略
+- **R1 WebDAV 原生通道（5a7a20f）**：`client/src/webdav.rs`（PUT/GET 单文件 +
+  `test_connection` PROPFIND 打目录），5 项测试含自建 mock WebDAV 端到端
+- **P1 设备层（d520929）**：`client/src/p2p.rs` 节点进程级单例 + `<base>/p2p` 数据目录
+  + 连接态 + 已配对设备读取（表损坏报错、不回落空表）
+- **P0 依赖迁移（fdf929a）**：domain 迁 libximep2p（pin `b19ecde`）+ patch 拆段
+
+验证：`cargo check --workspace`（默认 / `--no-default-features`）双绿；
+`cargo test --workspace` 70 项通过（client 54 + app 16）；clippy/fmt 干净
 
 ## 下一步
 
-1. **R2 桌面界面重构**：侧栏五页（概览 / 同步 / 设备 / 历史 / 设置）；同步页 = 通道
-   列表（局域网直连 / WebDAV，HTTP 暂不暴露）+ 选中通道配置 + 同步内容开关；
-   配置模型改为每通道独立一节（`[http]`/`[webdav]`/`[p2p]`），`UiState` 按页拆子结构。
-   当前同步页只剩开关与「保存并应用」，通道选择尚无入口
-2. **P2 传输适配**：通道接线 + `P2pTransport`（`push`→`set_clipboard`、
-   `pull`→`Ok(None)`、`next_event`→`p2p::wait_event` 走 `spawn_blocking`）+ 同步页
-   「局域网直连」选项；无对端时 `push` 返 `Err` 复用引擎退避，避免 UI 假在线。
-   `make_transport` 里 `ensure()` 必须在 `spawn_blocking`/独立线程里调（`Node::start`
-   `block_on`，异步上下文会 panic）
-2. **P3 配对 UI**：`Panel::Device` + 侧栏「设备」页（显示码/输入码/已配对设备表），
-   线程模型照 `xime-setup/src/pages/pair.rs`（会话号递增丢弃迟到事件）。**已知坑**：
-   `Watcher::bind` 无 `SO_REUSEADDR`，Node 常驻时 `join()` 绑不上 UDP 47822 → 配对前
-   暂停节点或只走 `join_at` 手动地址
-3. 上游登记两项：xime-plugin 迁移 quickjs 契约（解开 `bdaff98` pin）、`Watcher` 加
-   `SO_REUSEADDR`
-4. GUI 手工验证：插件同步端到端（见「待办」）
+1. **GUI 手工验证三条通道**：WebDAV（地址/账号 → 测试连接 → 双端同步）、局域网直连
+   （两台设备同一网络 → 生成码/输入码 → 复制文本自动同步）、HTTP（概览页启停 server）
+2. **配对端口的长期方案**：当前靠「配对前暂停节点」绕开端口冲突，代价是配对期间同步
+   中断。上游给 `Watcher::bind` 加 `SO_REUSEADDR`（或配对改用临时端口 + 公告真实端口）
+   后可去掉暂停逻辑
+3. 文件同步（跨平台剪贴板文件路径读写，工程量最大）
+4. macOS .app 打包（LSUIElement + 图标）
+5. **LICENSE 待决**：`xime-p2p` / `xime-sync-domain` 均为 GPL-3.0-or-later，而桌面形态
+   现在默认编入 p2p（`tray` feature 依赖 `client/p2p`），默认产物已是 GPL 代码——
+   需要把本仓 LICENSE 整体转 GPL-3.0-or-later（与 XimeYi / Android 一致）
 
 ## 已完成
 
-- [x] **插件体系移除（本次，决策 16）**：client 插件模块/feature/依赖、AdapterKind、app 插件 UI 与 8 个消息全部删除；旧配置字段被 serde 忽略、回落 HTTP 通道；59 项测试通过
+- [x] **R2/R3 桌面重构（本次）**：五页 IA + 通道模型/配置迁移 + `Router` 降级 + P2P 配对页；`UiState` 改单一草稿；视觉对齐 xime-setup 组件（详见决策 17~19）
+- [x] **插件体系移除（决策 16）**：client 插件模块/feature/依赖、AdapterKind、app 插件 UI 与 8 个消息全部删除；旧配置字段被 serde 忽略、回落 HTTP 通道；59 项测试通过
 - [x] **P1 局域网 P2P 设备层（d520929）**：`client/src/p2p.rs` 节点单例 + 数据目录 + 连接态 + 已配对设备读取；feature `p2p` 默认关；`cargo test -p client --features p2p` 4 项通过（详见决策 15）
 - [x] **P0 局域网 P2P 依赖迁移（上次，fdf929a）**：domain 迁 libximep2p（pin `b19ecde`）+ patch 拆段 + xime-plugin pin `bdaff98` + config 下限 0.15.27；两种构建形态 check 双绿、50 项测试全过、fmt 干净（详见决策 14）
 - [x] **同步模型收敛（上次）**：server 只保留 local 后端与默认 hub/官方协议定位；client 只保留 Server/Plugin 两种适配器；删除 server 端 WebDAV 存储后端、client 直连 WebDAV/S3（含 SigV4）与 store_factory 装配层；`[storage]` 配置节与相关环境变量移除；libximecore 仓库级 reqwest 依赖删除；两仓库 cargo check/test/clippy/fmt 全绿（详见决策 13）
