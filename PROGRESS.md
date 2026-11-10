@@ -1,10 +1,18 @@
 # PROGRESS
 
-> 更新：2026-11-10 · 阶段：桌面重构 R2/R3 完成；HTTP 通道从界面彻底移除
+> 更新：2026-11-10 · 阶段：桌面重构 R2/R3 完成；三平台托盘常驻；HTTP 通道从界面彻底移除
 
 ## 当前状态
 
-- **HTTP 从界面移除（本次，决策 21）**：同步页只列局域网直连 / WebDAV；设置页删掉
+- **托盘常驻（本次，决策 22）**：窗口改由 `iced::daemon` 承载——关窗不再退出进程，托盘菜单
+  「显示主窗口 / 隐藏到托盘 / 退出 ximed」。Windows/macOS/X11 关窗走 `Mode::Hidden`
+  保留窗口；Wayland 的 `set_visible` 是 no-op，改为销毁窗口、托盘恢复时按原设置重建。
+  Linux 托盘补齐 GTK/GLib 泵（`gtk_main_iteration_do`，UI 100ms 订阅）——只 `gtk::init()`
+  不迭代时 AppIndicator 的 SNI 根本不注册、菜单点击无响应。托盘图标改用
+  `assets/icon.png`（macOS 22px、其余 32px），退出前 `shutdown()` 主动 drop。
+  已验证：KWin 关窗 → 窗口销毁且进程存活；托盘显示 → 新窗口；托盘隐藏 → 销毁；
+  托盘退出 → 进程结束（SNI 项同步消失）。
+- **HTTP 从界面移除（上次，决策 21）**：同步页只列局域网直连 / WebDAV；设置页删掉
   「高级 · HTTP 通道」整组；概览删掉服务器启停卡；`Message::{HttpMode,HttpField}`、
   `Channel::Http` 的渲染分支、手动启停 `UiCmd::{ServerStart,ServerRestart,ServerStop}`
   全部删除。HTTP 仅作为**后台回退通道**存在（默认 `channels = ["http"]`）：界面上
@@ -35,7 +43,9 @@
 - **P0 依赖迁移（fdf929a）**：domain 迁 libximep2p（pin `b19ecde`）+ patch 拆段
 
 验证：`cargo check --workspace`（默认 / `--no-default-features`）双绿；
-`cargo test --workspace` 70 项通过（client 54 + app 16）；clippy/fmt 干净
+`cargo test --workspace` 70 项通过（client 54 + app 16）；fmt 干净。
+托盘额外做了 Linux Wayland 实机验证（D-Bus StatusNotifierItem/DBusMenu + KWin 脚本
+关窗，见上）；Windows/macOS 本轮只做代码路径审查，未实机跑。
 
 ## 下一步
 
@@ -45,15 +55,19 @@
 2. **配对端口的长期方案**：当前靠「配对前暂停节点」绕开端口冲突，代价是配对期间同步
    中断。上游给 `Watcher::bind` 加 `SO_REUSEADDR`（或配对改用临时端口 + 公告真实端口）
    后可去掉暂停逻辑
-3. 文件同步（跨平台剪贴板文件路径读写，工程量最大）
-4. macOS .app 打包（LSUIElement + 图标）
-5. **LICENSE 待决**：`xime-p2p` / `xime-sync-domain` 均为 GPL-3.0-or-later，而桌面形态
+3. **托盘/常驻的边角**：macOS Dock 图标在无窗口时点击不会恢复窗口（winit 没有
+   reopen 事件，当前只能从菜单栏托盘恢复）；GNOME 无 AppIndicator 扩展时托盘不可见，
+   需要探测 StatusNotifierWatcher 并回退成「关窗即退出」；开机自启（三平台）尚未做
+4. 文件同步（跨平台剪贴板文件路径读写，工程量最大）
+5. macOS .app 打包（LSUIElement + 图标）
+6. **LICENSE 待决**：`xime-p2p` / `xime-sync-domain` 均为 GPL-3.0-or-later，而桌面形态
    现在默认编入 p2p（`tray` feature 依赖 `client/p2p`），默认产物已是 GPL 代码——
    需要把本仓 LICENSE 整体转 GPL-3.0-or-later（与 XimeYi / Android 一致）
 
 ## 已完成
 
-- [x] **R2/R3 桌面重构（本次）**：五页 IA + 通道模型/配置迁移 + `Router` 降级 + P2P 配对页；`UiState` 改单一草稿；视觉对齐 xime-setup 组件（详见决策 17~19）
+- [x] **三平台托盘常驻（本次，决策 22）**：`iced::daemon` + 关窗隐藏/销毁重建 + Linux GTK 泵 + 官方图标；手工验证 Linux Wayland 关窗/显示/隐藏/退出全链路
+- [x] **R2/R3 桌面重构（上次）**：五页 IA + 通道模型/配置迁移 + `Router` 降级 + P2P 配对页；`UiState` 改单一草稿；视觉对齐 xime-setup 组件（详见决策 17~19）
 - [x] **插件体系移除（决策 16）**：client 插件模块/feature/依赖、AdapterKind、app 插件 UI 与 8 个消息全部删除；旧配置字段被 serde 忽略、回落 HTTP 通道；59 项测试通过
 - [x] **P1 局域网 P2P 设备层（d520929）**：`client/src/p2p.rs` 节点单例 + 数据目录 + 连接态 + 已配对设备读取；feature `p2p` 默认关；`cargo test -p client --features p2p` 4 项通过（详见决策 15）
 - [x] **P0 局域网 P2P 依赖迁移（上次，fdf929a）**：domain 迁 libximep2p（pin `b19ecde`）+ patch 拆段 + xime-plugin pin `bdaff98` + config 下限 0.15.27；两种构建形态 check 双绿、50 项测试全过、fmt 干净（详见决策 14）

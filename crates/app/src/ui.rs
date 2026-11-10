@@ -109,7 +109,9 @@ pub enum Message {
     WindowOpened(iced::window::Id),
     /// 窗口大小变化（用于历史卡片换行行数估算）。
     WindowResized(iced::Size),
-    /// 窗口关闭请求（点红叉 → 隐藏到托盘而非退出）。
+    /// 窗口已关闭（daemon 模式下销毁窗口、进程继续常驻）。
+    WindowClosed(iced::window::Id),
+    /// 窗口关闭请求（点红叉 → 关闭窗口，托盘里仍可恢复）。
     WindowCloseRequested(iced::window::Id),
     /// 切换到某个面板。
     SelectPanel(Panel),
@@ -161,6 +163,8 @@ pub enum Message {
     PairingTab(usize),
     /// 每秒心跳：只用于刷新配对码倒计时。
     Tick,
+    /// 驱动 Linux 托盘（GTK/GLib）事件队列；其他平台空转。
+    PumpTray,
     /// 移除已配对设备。
     RemovePeer(String),
     /// 保存并应用设置。
@@ -229,8 +233,12 @@ pub struct UiState {
     window_id: Option<iced::window::Id>,
     /// 主窗口宽度（逻辑像素），用于估算历史卡片内容是否超过 3 行。
     window_width: f32,
-    /// 托盘是否已创建（首个 Backend 消息时创建，主线程）。
+    /// 托盘是否已创建（首个 Backend 消息/窗口打开时创建，主线程）。
     tray_started: bool,
+    /// 托盘是否创建成功；失败时关窗必须退出，否则隐藏后无法恢复或退出。
+    tray_ok: bool,
+    /// 主窗口设置：daemon 模式关窗即销毁，重新显示时按这份设置重建。
+    window_settings: iced::window::Settings,
 }
 
 impl UiState {
@@ -241,6 +249,7 @@ impl UiState {
         cmd_tx: UiCmdSender,
         local_server: bool,
         config_dir: String,
+        window_settings: iced::window::Settings,
     ) -> Self {
         let draft = app_settings.clone();
         // 界面只展示局域网 / WebDAV；后台的 HTTP 回退通道不给配置入口
@@ -281,6 +290,8 @@ impl UiState {
             window_id: None,
             window_width: 1024.0,
             tray_started: false,
+            tray_ok: false,
+            window_settings,
         };
         state.reload_peers();
         state
@@ -303,7 +314,7 @@ pub fn ui_cmd_channel() -> (UiCmdSender, std::sync::mpsc::Receiver<UiCmd>) {
     std::sync::mpsc::channel()
 }
 
-/// 运行桌面 UI：阻塞直到窗口关闭。
+/// 运行桌面 UI：阻塞直到进程退出（关窗只是销毁窗口，daemon 继续常驻托盘）。
 ///
 /// - `local_server`：desktop 模式为 true（本地 server 可启停），client-only 为 false。
 /// - `config_dir`：配置文件所在目录（打开文件管理器用）。
@@ -316,44 +327,80 @@ pub fn run_ui(
     local_server: bool,
     config_dir: String,
 ) -> iced::Result {
-    let state = UiState::new(&cfg, &app_settings, tx, cmd_tx, local_server, config_dir);
-    let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
-    // 窗口图标：编译期嵌入 PNG（512×512 RGBA），解码失败视为程序 bug。
+    // 窗口图标：编译期嵌入 PNG（1024×1024 RGBA），解码失败视为程序 bug。
     let icon = iced::window::icon::from_file_data(include_bytes!("../assets/icon.png"), None)
         .expect("embedded window icon must decode");
-    iced::application(move || (state.clone(), Task::none()), update, view)
-        .title("ximed")
-        .window(iced::window::Settings {
-            icon: Some(icon),
-            // Linux 桌面环境（GNOME 等）不读窗口图标，而是按 app_id 匹配
-            // ~/.local/share/applications|/usr/share/applications 下的 .desktop 文件
-            // 取图标；app_id 必须等于 .desktop 文件名（cargo-packager 打包产物即
-            // ximed-desktop.desktop），否则任务栏显示系统默认图标。
-            #[cfg(target_os = "linux")]
-            platform_specific: iced::window::settings::PlatformSpecific {
-                application_id: "ximed-desktop".into(),
-                ..Default::default()
-            },
+    let window_settings = iced::window::Settings {
+        icon: Some(icon),
+        // Linux 桌面环境（GNOME 等）不读窗口图标，而是按 app_id 匹配
+        // ~/.local/share/applications|/usr/share/applications 下的 .desktop 文件
+        // 取图标；app_id 必须等于 .desktop 文件名（cargo-packager 打包产物即
+        // ximed-desktop.desktop），否则任务栏显示系统默认图标。
+        #[cfg(target_os = "linux")]
+        platform_specific: iced::window::settings::PlatformSpecific {
+            application_id: "ximed-desktop".into(),
             ..Default::default()
-        })
-        .exit_on_close_request(false)
-        .subscription(move |_state| {
-            Subscription::batch([
-                backend_events(rx.clone()),
-                window_events(),
-                iced::time::every(std::time::Duration::from_secs(1)).map(|_| Message::Tick),
-            ])
-        })
-        .theme(theme)
-        .run()
+        },
+        // 关窗由 update 决定：托盘可用 → close 窗口、daemon 继续常驻；
+        // 托盘不可用 → 直接退出，避免没有窗口又无法恢复。
+        exit_on_close_request: false,
+        ..Default::default()
+    };
+    let state = UiState::new(
+        &cfg,
+        &app_settings,
+        tx,
+        cmd_tx,
+        local_server,
+        config_dir,
+        window_settings.clone(),
+    );
+    let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+
+    // daemon 模式：默认没有窗口，窗口全部关闭后进程也不退出——这是托盘常驻的基础。
+    // 启动时开主窗口；关窗时 Windows/macOS/X11 用 Hidden 保留窗口，
+    // Wayland 因 set_visible 是 no-op 而销毁窗口，托盘恢复时按同一份设置重建。
+    iced::daemon(
+        move || {
+            let mut state = state.clone();
+            let (id, task) = iced::window::open(window_settings.clone());
+            state.window_id = Some(id);
+            (state, task.map(Message::WindowOpened))
+        },
+        update,
+        daemon_view,
+    )
+    .title("ximed")
+    .subscription(move |_state| {
+        let mut subscriptions = vec![
+            backend_events(rx.clone()),
+            window_events(),
+            iced::time::every(std::time::Duration::from_secs(1)).map(|_| Message::Tick),
+        ];
+        // Linux 托盘走 GTK/AppIndicator，GLib 主上下文需要被周期性驱动，
+        // 否则托盘项不注册、菜单点击没反应（见 tray 模块文档）。
+        #[cfg(target_os = "linux")]
+        subscriptions.push(
+            iced::time::every(std::time::Duration::from_millis(100)).map(|_| Message::PumpTray),
+        );
+        Subscription::batch(subscriptions)
+    })
+    .theme(move |state: &UiState, _window| Some(theme(state)))
+    .run()
 }
 
-/// 窗口事件订阅：记录窗口 id（打开时）、窗口尺寸、拦截关闭请求（隐藏到托盘）。
+/// daemon 的 view 适配：窗口 id 不参与视图，界面状态由 `UiState` 统一持有。
+fn daemon_view(state: &UiState, _window: iced::window::Id) -> Element<'_, Message> {
+    view(state)
+}
+
+/// 窗口事件订阅：记录窗口 id、尺寸、关闭请求与销毁事件。
 fn window_events() -> Subscription<Message> {
     Subscription::batch([
         iced::window::open_events().map(Message::WindowOpened),
         iced::window::resize_events().map(|(_id, size)| Message::WindowResized(size)),
         iced::window::close_requests().map(Message::WindowCloseRequested),
+        iced::window::close_events().map(Message::WindowClosed),
     ])
 }
 
@@ -369,8 +416,12 @@ fn theme(_state: &UiState) -> iced::Theme {
 }
 
 fn update(state: &mut UiState, message: Message) -> Task<Message> {
-    // 首个后台事件到达时（任意变体）在主线程创建托盘：此时事件循环已运行
-    if matches!(&message, Message::Backend(_)) {
+    // 首个后台事件 / 窗口打开 / Linux 托盘泵 时在主线程创建托盘：
+    // 此时事件循环已运行，GTK/NSStatusItem 才能挂上去。
+    if matches!(
+        &message,
+        Message::Backend(_) | Message::WindowOpened(_) | Message::PumpTray
+    ) {
         state.ensure_tray();
     }
     match message {
@@ -428,18 +479,34 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
             return hide_window(state);
         }
         Message::Backend(UiMsg::Quit) => {
+            crate::tray::shutdown();
             return iced::exit();
         }
         Message::WindowOpened(id) => {
             state.window_id = Some(id);
+            // 托盘恢复时新窗口可能落在其他窗口后面；打开即聚焦。
+            return iced::window::gain_focus(id);
+        }
+        Message::WindowClosed(id) => {
+            if state.window_id == Some(id) {
+                state.window_id = None;
+            }
         }
         Message::WindowResized(size) => {
             state.window_width = size.width;
+            // Wayland 关窗会销毁窗口，记住最后一次尺寸，托盘恢复时按它重建。
+            state.window_settings.size = size;
         }
         Message::WindowCloseRequested(id) => {
             state.window_id = Some(id);
-            // 关闭按钮：隐藏到托盘而非退出
-            return hide_window(state);
+            // 关闭按钮：hide_window 按平台隐藏/销毁窗口，daemon 下进程继续常驻。
+            // 托盘不可用时必须退出，否则窗口消失后用户既看不到界面也无法退出。
+            state.ensure_tray();
+            if state.tray_ok {
+                return hide_window(state);
+            }
+            crate::tray::shutdown();
+            return iced::exit();
         }
         Message::SelectPanel(panel) => {
             state.panel = panel;
@@ -507,6 +574,7 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
                 state.pairing_error = true;
             }
         }
+        Message::PumpTray => crate::tray::pump(),
         Message::RemovePeer(did) => state.remove_peer(&did),
         Message::ApplySettings => {
             let cmd = UiCmd::ApplySettings(Box::new(state.saved_draft()));
@@ -517,6 +585,7 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
             }
         }
         Message::Quit => {
+            crate::tray::shutdown();
             return iced::exit();
         }
     }
@@ -766,26 +835,57 @@ impl UiState {
         self.tray_started = true;
         #[cfg(target_os = "macos")]
         crate::macos::set_dock_icon();
-        if let Err(e) = crate::tray::setup(self.tx.clone()) {
-            eprintln!("[ximed] tray setup failed: {e}");
-            tracing::warn!("tray setup failed: {e}");
+        match crate::tray::setup(self.tx.clone()) {
+            Ok(()) => self.tray_ok = true,
+            Err(e) => {
+                self.tray_ok = false;
+                eprintln!("[ximed] tray setup failed: {e}");
+                tracing::warn!("tray setup failed: {e}");
+            }
         }
     }
 }
 
-/// 显示主窗口（从托盘恢复）。
-fn show_window(state: &UiState) -> Task<Message> {
-    match state.window_id {
-        Some(id) => iced::window::set_mode(id, iced::window::Mode::Windowed),
-        None => Task::none(),
+/// 显示主窗口（从托盘恢复）：已有窗口就恢复并聚焦，没有就按保存的设置重建。
+fn show_window(state: &mut UiState) -> Task<Message> {
+    if let Some(id) = state.window_id {
+        return Task::batch([
+            iced::window::set_mode(id, iced::window::Mode::Windowed),
+            iced::window::gain_focus(id),
+        ]);
     }
+    let (id, task) = iced::window::open(state.window_settings.clone());
+    state.window_id = Some(id);
+    task.map(move |_| Message::WindowOpened(id))
 }
 
-/// 隐藏主窗口到托盘（不退出进程）。
-fn hide_window(state: &UiState) -> Task<Message> {
-    match state.window_id {
-        Some(id) => iced::window::set_mode(id, iced::window::Mode::Hidden),
-        None => Task::none(),
+/// 关闭主窗口到托盘（daemon 下进程继续常驻）。
+fn hide_window(state: &mut UiState) -> Task<Message> {
+    let Some(id) = state.window_id else {
+        return Task::none();
+    };
+    if should_recreate_window() {
+        // Wayland 没有隐藏窗口的协议（winit 的 set_visible 是 no-op），
+        // 只能销毁窗口，托盘恢复时再重建。
+        state.window_id = None;
+        return iced::window::close(id);
+    }
+    iced::window::set_mode(id, iced::window::Mode::Hidden)
+}
+
+/// 关窗时是「隐藏」还是「销毁重建」。
+///
+/// Windows / macOS / X11 的 Hidden 模式可用，保留窗口能保住尺寸与界面状态；
+/// Wayland 上 `Window::set_visible` 是空实现，窗口藏不掉，只能close。
+fn should_recreate_window() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::env::var_os("WAYLAND_DISPLAY").is_some()
+            || std::env::var_os("WAYLAND_SOCKET").is_some()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
     }
 }
 

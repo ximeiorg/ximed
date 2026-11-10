@@ -235,3 +235,41 @@ channels = ["p2p", "webdav"]
 
 以后要恢复 HTTP 配置能力时，只需把这几个渲染分支加回来并接上 `draft.http` 字段——
 配置结构 `[http]` 一直保留，迁移与引擎侧都不用动。
+
+## 22. 托盘常驻：iced daemon + 平台差异化隐藏（2026-11-10）
+
+产品语义：窗口只是入口，进程常驻；点窗口关闭按钮不退出，托盘菜单提供
+「显示主窗口 / 隐藏到托盘 / 退出 ximed」，只有「退出 ximed」结束进程。
+三平台（Windows / Linux / macOS）同一套菜单与语义。
+
+实现决策：
+
+- **用 `iced::daemon` 承载桌面 UI**：`iced::application` 在最后一个窗口销毁时会退出进程，
+  而 daemon 明确「所有窗口关闭后也不停止」，这是托盘常驻的基础。启动时由 boot 返回
+  `window::open(settings)` 开主窗口；「显示主窗口」时若窗口已被销毁则按同一份
+  `window::Settings` 重建。窗口图标、Linux `application_id` 都放进这份 settings，
+  重建时不会丢。
+- **关窗策略按平台分**：Windows / macOS / X11 用 `window::set_mode(Hidden)` 保留窗口，
+  尺寸与界面状态都不丢；Wayland 上 winit 的 `Window::set_visible` 是空实现
+  （`winit-0.30.13/src/platform_impl/linux/wayland/window/mod.rs:253`），窗口藏不掉，
+  只能 `window::close` 销毁、显示时重建（`should_recreate_window()` 按
+  `WAYLAND_DISPLAY` / `WAYLAND_SOCKET` 判断）。
+- **Linux 托盘必须泵 GLib 主上下文**：tray-icon 的 GTK 后端是
+  libayatana-appindicator，SNI 注册与 DBusMenu 激活都挂在 GLib 默认上下文上；只
+  `gtk::init()` 而 iced/winit 不跑 GTK 主循环时，托盘项**不会注册**、菜单点了也没反应
+  （已用 D-Bus 实测）。因此在 iced 主线程初始化 GTK，并在 UI 订阅里加一条 100ms 定时器
+  调 `gtk::main_iteration_do(false)`；所有 GTK 调用保持主线程。Windows/macOS 由
+  tray-icon 自己的消息循环驱动，pump 为空实现。
+- **托盘图标用官方 `assets/icon.png`**：macOS 22px、其余 32px，按平台 Lanczos 缩放；
+  不再程序化画蓝点。macOS 不开 template——源图有不透明圆角底，template 会变成实心块。
+- **托盘句柄存主线程 thread-local**：既保证托盘活到进程结束，又在退出前 `shutdown()`
+  主动 drop，让 Windows 立即删图标、Linux 删临时 PNG（`Box::leak` 做不到）。
+- **托盘创建失败则关窗即退出**：不能把窗口藏起来让用户既看不到界面也无法退出。
+  创建时机从「首个后台事件」提前到「窗口打开 / 首个 Linux 泵 tick」，避免引擎异常时
+  永远没有托盘。
+- macOS 菜单栏点击不在 `TrayIconEvent::Click` 里顺手弹窗口（点击本身会展开菜单）；
+  Windows/Linux 保留左键点击显示窗口；右键只出菜单（只匹配左键 Up）。
+
+已知边角（后续）：macOS 无窗口时点 Dock 图标不会恢复（winit 没有 reopen 事件）；
+GNOME 无 AppIndicator 扩展时托盘不可见，需探测 StatusNotifierWatcher 后回退成关窗即退出；
+开机自启尚未做。
