@@ -173,6 +173,15 @@ fn apply_transport_settings(
     client_cfg.p2p.data_dir = config_dir.to_string();
 }
 
+/// 本机 server 的持有者。
+///
+/// `_shutdown` 必须与任务同寿命：watch 的 sender 一旦被 drop，`run_managed` 会立刻
+/// 收到关闭信号，server 会在启动后马上退出。
+struct ServerHandle {
+    task: tokio::task::JoinHandle<()>,
+    _shutdown: tokio::sync::watch::Sender<bool>,
+}
+
 /// 后台服务控制循环：响应 UI 命令，统一管理本地 server、client 同步引擎与历史轮询。
 ///
 /// - server 以 [`xime_sync_server::run_managed`] 在独立任务中运行，通过 watch channel 优雅停止。
@@ -186,9 +195,8 @@ async fn desktop_control_loop(
     tx: UiSender,
 ) {
     let addr = settings.server().addr.clone();
-    // 当前 server 任务及其 shutdown 发送端
-    let mut server_task: Option<tokio::task::JoinHandle<()>> = None;
-    let mut shutdown_tx: Option<tokio::sync::watch::Sender<bool>> = None;
+    // 当前本机 server（自动拉起，界面不再提供启停入口）
+    let mut server: Option<ServerHandle> = None;
     // 当前 client 引擎与历史轮询任务
     let mut engine_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut history_task: Option<tokio::task::JoinHandle<()>> = None;
@@ -205,6 +213,31 @@ async fn desktop_control_loop(
         LocalHistory::open(std::env::temp_dir().join("ximed-client-history.db"), 100)
             .expect("local history must open in temp dir as fallback")
     });
+
+    // 内置回退通道依赖本机 server：界面已不再提供启停入口，这里按需自动拉起。
+    // 只在通道列表真的包含 HTTP 时才启动——用户改用局域网 / WebDAV 后不再监听端口。
+    if client_cfg
+        .channels
+        .iter()
+        .any(|id| id == client::channel::CHANNEL_HTTP)
+    {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let server_settings = settings.clone();
+        let task = tokio::spawn(async move {
+            if let Err(e) = xime_sync_server::run_managed(server_settings, shutdown_rx).await {
+                tracing::error!("server exited: {e}");
+            }
+        });
+        server = Some(ServerHandle {
+            task,
+            _shutdown: shutdown_tx,
+        });
+        let _ = tx.send(UiMsg::ServerListening {
+            addr: addr.clone(),
+            lan: lan_ip().map(|lan| lan_endpoint(&addr, &lan)),
+        });
+        tracing::info!("内置回退通道启用：本机 server 已自动启动");
+    }
 
     spawn_client_services(
         &mut engine_task,
@@ -241,54 +274,6 @@ async fn desktop_control_loop(
         // 处理所有待处理命令
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
-                UiCmd::ServerStart => {
-                    if server_task.is_some() {
-                        continue;
-                    }
-                    let (shutdown_tx_, shutdown_rx) = tokio::sync::watch::channel(false);
-                    let settings = settings.clone();
-                    let task = tokio::spawn(async move {
-                        if let Err(e) = xime_sync_server::run_managed(settings, shutdown_rx).await {
-                            tracing::error!("server exited: {e}");
-                        }
-                    });
-                    shutdown_tx = Some(shutdown_tx_);
-                    server_task = Some(task);
-                    let _ = tx.send(UiMsg::ServerListening {
-                        addr: addr.clone(),
-                        lan: lan_ip().map(|lan| lan_endpoint(&addr, &lan)),
-                    });
-                }
-                UiCmd::ServerStop => {
-                    if let Some(shutdown) = shutdown_tx.take() {
-                        let _ = shutdown.send(true);
-                    }
-                    if let Some(task) = server_task.take() {
-                        let _ = task.await;
-                    }
-                    let _ = tx.send(UiMsg::ServerStopped { addr: addr.clone() });
-                }
-                UiCmd::ServerRestart => {
-                    if let Some(shutdown) = shutdown_tx.take() {
-                        let _ = shutdown.send(true);
-                    }
-                    if let Some(task) = server_task.take() {
-                        let _ = task.await;
-                    }
-                    let (shutdown_tx_, shutdown_rx) = tokio::sync::watch::channel(false);
-                    let settings = settings.clone();
-                    let task = tokio::spawn(async move {
-                        if let Err(e) = xime_sync_server::run_managed(settings, shutdown_rx).await {
-                            tracing::error!("server exited: {e}");
-                        }
-                    });
-                    shutdown_tx = Some(shutdown_tx_);
-                    server_task = Some(task);
-                    let _ = tx.send(UiMsg::ServerListening {
-                        addr: addr.clone(),
-                        lan: lan_ip().map(|lan| lan_endpoint(&addr, &lan)),
-                    });
-                }
                 UiCmd::OpenConfigDir => {
                     open_dir();
                 }
@@ -322,12 +307,11 @@ async fn desktop_control_loop(
             }
         }
         // server 任务异常退出时同步 UI 状态（如端口被占用）
-        if let Some(task) = server_task.as_mut()
-            && task.is_finished()
+        if let Some(handle) = server.as_mut()
+            && handle.task.is_finished()
         {
             let _ = tx.send(UiMsg::ServerStopped { addr: addr.clone() });
-            server_task = None;
-            shutdown_tx = None;
+            server = None;
         }
     }
 }

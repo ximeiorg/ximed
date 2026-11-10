@@ -1,10 +1,16 @@
 # PROGRESS
 
-> 更新：2026-11-10 · 阶段：桌面重构 R2/R3 完成（五页信息架构 + 三通道接线 + P2P 配对）
+> 更新：2026-11-10 · 阶段：桌面重构 R2/R3 完成；HTTP 通道从界面彻底移除
 
 ## 当前状态
 
-- **R3 局域网直连接线 + 配对页（本次）**：`P2pTransport`（`push`→`set_clipboard`、`pull`→
+- **HTTP 从界面移除（本次，决策 21）**：同步页只列局域网直连 / WebDAV；设置页删掉
+  「高级 · HTTP 通道」整组；概览删掉服务器启停卡；`Message::{HttpMode,HttpField}`、
+  `Channel::Http` 的渲染分支、手动启停 `UiCmd::{ServerStart,ServerRestart,ServerStop}`
+  全部删除。HTTP 仅作为**后台回退通道**存在（默认 `channels = ["http"]`）：界面上
+  不可见、不可配，概览只在「未选择同步方式」时显示一行「内置回退 · 运行中/未就绪」。
+  因为没有启停入口了，desktop 在启动时按需自动拉起本机 server（仅当 channels 含 http）
+- **R3 局域网直连接线 + 配对页（上次）**：`P2pTransport`（`push`→`set_clipboard`、`pull`→
   `Ok(None)`、`next_event`→非阻塞 `poll` 轮询）+ `client::p2p::{start_display_pairing,
   start_join_pairing, remove_peer, local_port}`。配对前 `shutdown()` 让出 47821/47822
   端口、结束后按原状态重启（配对与常驻节点抢同一组端口，且监听都没 `SO_REUSEADDR`）。
@@ -33,8 +39,9 @@
 
 ## 下一步
 
-1. **GUI 手工验证三条通道**：WebDAV（地址/账号 → 测试连接 → 双端同步）、局域网直连
-   （两台设备同一网络 → 生成码/输入码 → 复制文本自动同步）、HTTP（概览页启停 server）
+1. **GUI 手工验证两条通道**：WebDAV（地址/账号 → 测试连接 → 双端同步）、局域网直连
+   （两台设备同一网络 → 生成码/输入码 → 复制文本自动同步）；顺带确认「未选择同步方式」
+   时概览显示内置回退、选中并保存后回退自动让位
 2. **配对端口的长期方案**：当前靠「配对前暂停节点」绕开端口冲突，代价是配对期间同步
    中断。上游给 `Watcher::bind` 加 `SO_REUSEADDR`（或配对改用临时端口 + 公告真实端口）
    后可去掉暂停逻辑

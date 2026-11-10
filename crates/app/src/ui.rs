@@ -26,7 +26,7 @@ use iced::{
     Alignment, Background, Border, Color, Element, Font, Length, Subscription, Task, Theme, border,
 };
 
-use crate::settings::{AppSettings, SyncMode};
+use crate::settings::AppSettings;
 
 /// 面板切换。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,7 +39,7 @@ pub enum Panel {
     Device,
     /// 剪贴板历史。
     History,
-    /// 设置：数据目录、HTTP 通道（高级）、关于。
+    /// 设置：数据目录与版本信息。
     Settings,
 }
 
@@ -81,19 +81,13 @@ pub enum UiMsg {
 /// UI → 后台的桌面级命令（跨线程 channel 负载）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiCmd {
-    /// 启动本地 server。
-    ServerStart,
-    /// 重启本地 server（先停后启）。
-    ServerRestart,
-    /// 停止本地 server。
-    ServerStop,
     /// 打开配置文件所在目录。
     OpenConfigDir,
     /// 应用新设置（通道优先级 / 各通道参数 / 同步内容），持久化并重启 client 引擎。
     ApplySettings(Box<AppSettings>),
 }
 
-/// 通道配置字段：一条消息覆盖三种通道的所有表单项。
+/// 通道配置字段：一条消息覆盖各通道的所有表单项。
 ///
 /// 不用「每个字段一个 Message」：通道参数会随通道增加而膨胀，逐个加变体既啰嗦
 /// 又容易漏改（新增字段要同时改 message / update / view 三处）。
@@ -104,14 +98,6 @@ pub enum ChannelField {
     WebDavUsername,
     WebDavPassword,
     P2pName,
-}
-
-/// HTTP 通道（设置 · 高级）字段。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HttpField {
-    Url,
-    Username,
-    Password,
 }
 
 /// UI 消息（iced Message：channel 事件 + 按钮动作）。
@@ -129,12 +115,6 @@ pub enum Message {
     SelectPanel(Panel),
     /// 展开/收起某条剪贴板历史卡片。
     ToggleHistoryItem(u64),
-    /// 启动本地 server。
-    ServerStart,
-    /// 重启本地 server。
-    ServerRestart,
-    /// 停止本地 server。
-    ServerStop,
     /// 打开配置文件所在目录。
     OpenConfigDir,
     /// 退出按钮。
@@ -183,13 +163,6 @@ pub enum Message {
     Tick,
     /// 移除已配对设备。
     RemovePeer(String),
-    /// 设置页：切换 HTTP 通道的本机 / 远程模式。
-    HttpMode(SyncMode),
-    /// 设置页：编辑 HTTP 通道字段。
-    HttpField {
-        field: HttpField,
-        value: String,
-    },
     /// 保存并应用设置。
     ApplySettings,
 }
@@ -197,13 +170,9 @@ pub enum Message {
 /// 窗口状态。
 #[derive(Debug, Clone)]
 pub struct UiState {
-    /// 服务器地址（配置只读）。
-    pub server_url: String,
     /// 本机来源设备（配置只读）。
     pub source: String,
-    /// 服务器状态文本（动态）。
-    pub server_status: String,
-    /// 服务器是否已监听（控制按钮状态依据）。
+    /// 内置回退通道依赖的本地服务是否在跑（界面只用于「内置回退」状态）。
     pub server_running: bool,
     /// 引擎状态文本（动态）。
     pub engine_status: String,
@@ -213,7 +182,7 @@ pub struct UiState {
     pub history: Vec<HistoryItem>,
     /// 展开的历史条目序号（seq；点击卡片展开/收起，只允许一个展开）。
     pub expanded_history: Option<u64>,
-    /// 是否显示服务器控制区（desktop 模式 true，client-only false）。
+    /// 是否显示可写配置的页面（desktop 形态 true，client-only false）。
     pub local_server: bool,
     /// 配置目录路径（数据目录 / 打开文件管理器用）。
     pub config_dir: String,
@@ -274,16 +243,16 @@ impl UiState {
         config_dir: String,
     ) -> Self {
         let draft = app_settings.clone();
+        // 界面只展示局域网 / WebDAV；后台的 HTTP 回退通道不给配置入口
         let selected_channel = draft
             .channels
-            .first()
+            .iter()
+            .find(|id| id.as_str() != client::channel::CHANNEL_HTTP)
             .cloned()
-            .unwrap_or_else(|| "http".to_string());
+            .unwrap_or_default();
         let max_file_mb = (draft.sync.max_file_byte / (1024 * 1024)).to_string();
         let mut state = Self {
-            server_url: cfg.server_url.clone(),
             source: cfg.source.clone(),
-            server_status: "stopped".to_string(),
             server_running: false,
             engine_status: "starting…".to_string(),
             panel: Panel::Status,
@@ -411,15 +380,10 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
         Message::Backend(UiMsg::EngineStopped { source }) => {
             state.engine_status = format!("engine stopped (device {source})");
         }
-        Message::Backend(UiMsg::ServerListening { addr, lan }) => {
-            state.server_status = match lan {
-                Some(lan) => format!("listening on {addr} · 局域网 {lan}"),
-                None => format!("listening on {addr}"),
-            };
+        Message::Backend(UiMsg::ServerListening { .. }) => {
             state.server_running = true;
         }
-        Message::Backend(UiMsg::ServerStopped { addr }) => {
-            state.server_status = format!("stopped ({addr})");
+        Message::Backend(UiMsg::ServerStopped { .. }) => {
             state.server_running = false;
         }
         Message::Backend(UiMsg::History { items }) => {
@@ -490,18 +454,6 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
                 Some(seq)
             };
         }
-        Message::ServerStart => {
-            state.server_status = "starting…".to_string();
-            let _ = state.cmd_tx.send(UiCmd::ServerStart);
-        }
-        Message::ServerRestart => {
-            state.server_status = "restarting…".to_string();
-            let _ = state.cmd_tx.send(UiCmd::ServerRestart);
-        }
-        Message::ServerStop => {
-            state.server_status = "stopping…".to_string();
-            let _ = state.cmd_tx.send(UiCmd::ServerStop);
-        }
         Message::OpenConfigDir => {
             let _ = state.cmd_tx.send(UiCmd::OpenConfigDir);
         }
@@ -556,20 +508,6 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
             }
         }
         Message::RemovePeer(did) => state.remove_peer(&did),
-        Message::HttpMode(mode) => {
-            state.draft.http.mode = mode;
-            state.settings_status.clear();
-        }
-        Message::HttpField { field, value } => {
-            match field {
-                HttpField::Url => state.draft.http.url = value,
-                HttpField::Username => state.draft.http.username = value,
-                HttpField::Password => {
-                    state.draft.http.password = Some(value).filter(|p| !p.is_empty())
-                }
-            }
-            state.settings_status.clear();
-        }
         Message::ApplySettings => {
             let cmd = UiCmd::ApplySettings(Box::new(state.saved_draft()));
             if state.cmd_tx.send(cmd).is_ok() {
@@ -606,6 +544,16 @@ impl UiState {
         draft
     }
 
+    /// 界面上可见的通道：HTTP 是后台回退通道，不提供配置入口。
+    fn visible_channels(&self) -> Vec<String> {
+        self.draft
+            .channels
+            .iter()
+            .filter(|id| id.as_str() != client::channel::CHANNEL_HTTP)
+            .cloned()
+            .collect()
+    }
+
     /// 重新读取已配对设备表。
     ///
     /// 读失败时保留错误而不是展示空表：表里是用户建立的信任关系，显示「暂无设备」
@@ -625,6 +573,10 @@ impl UiState {
 
     /// 启用 / 停用通道（从优先级列表增删）。
     fn toggle_channel(&mut self, id: &str) {
+        // HTTP 回退通道由后台维护，界面既不能加也不能删
+        if id == client::channel::CHANNEL_HTTP {
+            return;
+        }
         if let Some(pos) = self.draft.channels.iter().position(|c| c == id) {
             if self.draft.channels.len() == 1 {
                 self.settings_status = "至少保留一条通道，否则同步无法启动。".to_string();
@@ -680,8 +632,7 @@ impl UiState {
 
     /// 测试当前选中通道。
     ///
-    /// WebDAV 要发真实请求，放后台线程；局域网只查设备表（连接态由引擎维护），
-    /// 本机 HTTP 通道没有「独立可测」的端点。
+    /// WebDAV 要发真实请求，放后台线程；局域网只查设备表（连接态由引擎维护）。
     fn test_connection(&mut self) {
         let id = self.selected_channel.clone();
         if id == client::channel::CHANNEL_P2P {
@@ -699,11 +650,6 @@ impl UiState {
                     self.channel_test_ok = Some(false);
                 }
             }
-            return;
-        }
-        if id == client::channel::CHANNEL_HTTP {
-            self.channel_test = "HTTP 通道的后端是本机 server，运行状态见「概览」。".to_string();
-            self.channel_test_ok = Some(self.server_running || self.sync_online);
             return;
         }
         self.channel_test = "正在测试…".to_string();
@@ -969,25 +915,6 @@ fn primary_button(_theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-/// 停止按钮：rose 填充 + 白色文字。
-fn stop_button(_theme: &Theme, status: button::Status) -> button::Style {
-    let bg = if status == button::Status::Hovered {
-        Color::from_rgb8(0xff, 0x8f, 0xa3)
-    } else {
-        RED
-    };
-    button::Style {
-        background: Some(Background::Color(bg)),
-        text_color: Color::WHITE,
-        border: Border {
-            color: Color::TRANSPARENT,
-            width: 0.0,
-            radius: border::radius(RADIUS_MD),
-        },
-        ..button::Style::default()
-    }
-}
-
 /// 次要操作按钮：透明底 + 边框，悬停浅色底。
 fn secondary_button(_theme: &Theme, status: button::Status) -> button::Style {
     let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
@@ -1173,17 +1100,8 @@ fn dot(active: bool) -> Element<'static, Message> {
 }
 
 fn overview_view(state: &UiState) -> Element<'_, Message> {
-    let primary = state
-        .draft
-        .channels
-        .first()
-        .map(|id| channel_label(id))
-        .unwrap_or_else(|| "未配置".to_string());
-    let primary_is_p2p = state
-        .draft
-        .channels
-        .first()
-        .is_some_and(|id| id == client::channel::CHANNEL_P2P);
+    let visible = state.visible_channels();
+    let primary = visible.first().map(|id| channel_label(id));
     let online = state.sync_online;
     let connection_badge = if online {
         badge("已连接", GREEN, GREEN_DIM)
@@ -1192,18 +1110,25 @@ fn overview_view(state: &UiState) -> Element<'_, Message> {
     };
     let connection_desc = if online {
         "引擎当前可用"
-    } else if primary_is_p2p {
-        "没有在线设备：确认两台设备在同一网络，并已完成配对"
-    } else {
+    } else if primary.is_some() {
         "检查通道参数，或换用其它通道"
+    } else {
+        "先在「同步通道」里选一种方式"
     };
 
-    let items: Vec<Element<'_, Message>> = vec![
-        settings_item(
-            "当前通道",
-            Some("按「同步」页的优先级顺序，首个可用通道"),
-            badge(primary.clone(), ACCENT, ACCENT_DIM),
+    let (mode_badge, mode_desc) = match &primary {
+        Some(name) => (
+            badge(name.clone(), ACCENT, ACCENT_DIM),
+            "按「同步通道」页的顺序，首个可用通道".to_string(),
         ),
+        None => (
+            badge("未选择", TEXT_MUTED, SURFACE_VARIANT),
+            "选择局域网直连或 WebDAV 后保存即可开始同步".to_string(),
+        ),
+    };
+
+    let mut items: Vec<Element<'_, Message>> = vec![
+        settings_item("同步方式", Some(mode_desc), mode_badge),
         settings_item("连接状态", Some(connection_desc), connection_badge),
         settings_item(
             "同步总开关",
@@ -1225,22 +1150,28 @@ fn overview_view(state: &UiState) -> Element<'_, Message> {
         ),
     ];
 
+    // 还没选同步方式时如实说明：后台有一条内置通道在工作，但它不提供配置
+    if primary.is_none() {
+        items.push(settings_item(
+            "内置回退",
+            Some("无需配置；选中同步方式并保存后自动停用"),
+            text(if state.server_running {
+                "运行中"
+            } else {
+                "未就绪"
+            })
+            .size(13)
+            .color(TEXT_MUTED)
+            .into(),
+        ));
+    }
+
     let mut content = column![
         panel_header("概览", "同步是否通、谁在同步"),
         settings_group("同步状态", None::<&str>, items),
     ]
     .spacing(16);
 
-    // 服务器控制区：仅本机 server 通道启用时才有意义
-    let uses_local_server = state
-        .draft
-        .channels
-        .iter()
-        .any(|id| id == client::channel::CHANNEL_HTTP)
-        && state.draft.http.mode == SyncMode::Local;
-    if state.local_server && uses_local_server {
-        content = content.push(server_controls(state));
-    }
     if !state.settings_status.is_empty() {
         content = content.push(banner(&state.settings_status, Tone::Info));
     }
@@ -1265,104 +1196,6 @@ fn panel_header<'a>(title: &'a str, subtitle: &'a str) -> Element<'a, Message> {
 /// 卡片标题。
 fn card_title<'a>(label: &'a str) -> Element<'a, Message> {
     text(label).size(14).font(SEMIBOLD).color(TEXT_MAIN).into()
-}
-
-/// 本地服务器控制卡片：开启 / 重启 / 关闭 + 打开配置文件目录。
-fn server_controls(state: &UiState) -> Element<'static, Message> {
-    let running = state.server_running;
-    let title = if running {
-        "服务器运行中"
-    } else {
-        "服务器已停止"
-    };
-
-    let status_badge = capsule(if running { "运行中" } else { "已停止" }, running);
-
-    let mut btns = row![].spacing(8).align_y(Alignment::Center);
-    if running {
-        btns = btns.push(
-            button("重启")
-                .on_press(Message::ServerRestart)
-                .padding([8, 14])
-                .style(secondary_button),
-        );
-        btns = btns.push(
-            button("关闭")
-                .on_press(Message::ServerStop)
-                .padding([8, 14])
-                .style(stop_button),
-        );
-    } else {
-        btns = btns.push(
-            button("开启")
-                .on_press(Message::ServerStart)
-                .padding([8, 18])
-                .style(primary_button),
-        );
-    }
-
-    container(
-        column![
-            row![
-                status_badge,
-                text(title).size(15).font(SEMIBOLD).color(TEXT_MAIN)
-            ]
-            .spacing(10)
-            .align_y(Alignment::Center),
-            text("本地服务器默认不随应用自动启动，请手动开启。")
-                .size(12)
-                .color(TEXT_MUTED),
-            btns,
-            button("打开配置文件所在目录")
-                .on_press(Message::OpenConfigDir)
-                .padding([7, 12])
-                .style(secondary_button),
-        ]
-        .spacing(10)
-        .padding(16),
-    )
-    .width(Length::Fill)
-    .style(card)
-    .into()
-}
-
-/// 状态胶囊：圆角标签，ok 为绿色、否则红色。
-fn capsule<'a>(label: &'a str, ok: bool) -> Element<'a, Message> {
-    let (fg, bg) = if ok {
-        (GREEN, GREEN_DIM)
-    } else {
-        (RED, RED_DIM)
-    };
-    container(
-        row![
-            container(text("").width(6).height(6))
-                .width(6)
-                .height(6)
-                .style(move |_| container::Style {
-                    background: Some(Background::Color(fg)),
-                    border: Border {
-                        color: Color::TRANSPARENT,
-                        width: 0.0,
-                        radius: border::radius(999.0),
-                    },
-                    ..container::Style::default()
-                }),
-            text(label).size(11).color(fg),
-        ]
-        .spacing(6)
-        .align_y(Alignment::Center),
-    )
-    .padding([3, 10])
-    .style(move |_| container::Style {
-        background: Some(Background::Color(bg)),
-        border: Border {
-            color: Color::TRANSPARENT,
-            width: 0.0,
-            radius: border::radius(999.0),
-        },
-        ..container::Style::default()
-    })
-    .into()
 }
 
 /// 历史卡片内容区收起时的高度（3 行文本 ≈ 3 × 20px）。
@@ -1636,8 +1469,26 @@ fn format_time(unix: i64) -> String {
 
 fn sync_view(state: &UiState) -> Element<'_, Message> {
     let mut list = column![].spacing(8);
-    for (index, id) in state.draft.channels.iter().enumerate() {
-        list = list.push(channel_row(state, id, index));
+    let mut visible_count = 0usize;
+    for (index, id) in state
+        .draft
+        .channels
+        .iter()
+        .filter(|id| id.as_str() != client::channel::CHANNEL_HTTP)
+        .enumerate()
+    {
+        list = list.push(channel_row(state, id.as_str(), index));
+        visible_count += 1;
+    }
+    if visible_count == 0 {
+        list = list.push(
+            container(
+                text("还没有选择同步方式。选一种并保存后，剪贴板就开始同步。")
+                    .size(13)
+                    .color(TEXT_MUTED),
+            )
+            .padding([8, 4]),
+        );
     }
 
     let mut add_row = row![].spacing(8).align_y(Alignment::Center);
@@ -1657,7 +1508,7 @@ fn sync_view(state: &UiState) -> Element<'_, Message> {
 
     let channels_card = container(
         column![
-            card_title("通道优先级"),
+            card_title("同步方式"),
             text("从上到下依次尝试：局域网直连掉线超过 10 秒会自动切到备用通道，恢复后自动切回。")
                 .size(11)
                 .color(TEXT_FAINT),
@@ -1665,27 +1516,35 @@ fn sync_view(state: &UiState) -> Element<'_, Message> {
             add_row,
         ]
         .spacing(10)
-        .padding(16),
+        .padding(18),
     )
     .width(Length::Fill)
     .style(card);
 
-    let body = column![
-        panel_header("同步", "选通道、配通道、定范围"),
+    let mut body = column![
+        panel_header("同步通道", "选方式、配参数、定范围"),
         Space::new().height(8),
         channels_card,
-        channel_config_card(state),
-        sync_content_card(state),
+    ]
+    .spacing(16);
+
+    // 只有选中了可见通道时才显示其配置
+    if !state.selected_channel.is_empty() {
+        body = body.push(channel_config_card(state));
+    }
+    body = body.push(sync_content_card(state));
+    body = body.push(
         row![
             button("保存并应用")
                 .on_press(Message::ApplySettings)
-                .padding([10, 18])
+                .padding([9, 16])
                 .style(primary_button),
         ]
         .align_y(Alignment::Center),
-        text(&state.settings_status).size(12).color(TEXT_MUTED),
-    ]
-    .spacing(10);
+    );
+    if !state.settings_status.is_empty() {
+        body = body.push(text(&state.settings_status).size(12).color(TEXT_MUTED));
+    }
 
     container(scrollable(body).height(Length::Fill))
         .width(Length::Fill)
@@ -1701,6 +1560,7 @@ fn channel_row<'a>(state: &'a UiState, id: &'a str, index: usize) -> Element<'a,
     } else {
         format!("备用 {index}")
     };
+    let visible_len = state.visible_channels().len();
 
     let mut actions = row![].spacing(6).align_y(Alignment::Center);
     if index > 0 {
@@ -1711,7 +1571,7 @@ fn channel_row<'a>(state: &'a UiState, id: &'a str, index: usize) -> Element<'a,
                 .style(secondary_button),
         );
     }
-    if index + 1 < state.draft.channels.len() {
+    if index + 1 < visible_len {
         actions = actions.push(
             button("↓")
                 .on_press(Message::ChannelMoveDown(id.to_string()))
@@ -1729,8 +1589,8 @@ fn channel_row<'a>(state: &'a UiState, id: &'a str, index: usize) -> Element<'a,
                 secondary_button
             }),
     );
-    // 至少留一条通道：否则保存后引擎无通道可用，同步会静默停摆
-    if state.draft.channels.len() > 1 {
+    // 允许清空到「未选择」，但至少不能把唯一一条删成空列表之外的状态
+    if visible_len >= 1 {
         actions = actions.push(
             button("移除")
                 .on_press(Message::ChannelToggle(id.to_string()))
@@ -1783,23 +1643,14 @@ fn channel_state_hint(state: &UiState, id: &str) -> String {
                 format!("已配对 {} 台设备", state.device_peers.len())
             }
         }
-        Some(client::channel::Channel::Http) => {
-            if state.draft.http.mode == SyncMode::Local {
-                format!("后台默认通道 · 本机 server {}", state.server_url)
-            } else if state.draft.http.url.is_empty() {
-                "尚未填写服务器地址".to_string()
-            } else {
-                state.draft.http.url.clone()
-            }
-        }
-        None => "未知通道".to_string(),
+        // 其余通道不在界面上出现
+        _ => String::new(),
     }
 }
 
 /// 选中通道的配置表单（对齐 setup 的 settings_group / settings_item 布局）。
 fn channel_config_card(state: &UiState) -> Element<'_, Message> {
-    let id = state.selected_channel.clone();
-    let channel = client::channel::Channel::from_id(&id);
+    let channel = client::channel::Channel::from_id(&state.selected_channel);
 
     let (title, description, items): (&str, &str, Vec<Element<'_, Message>>) = match channel {
         Some(client::channel::Channel::WebDav) => (
@@ -1874,7 +1725,7 @@ fn channel_config_card(state: &UiState) -> Element<'_, Message> {
                     ),
                     settings_item(
                         "已配对设备",
-                        Some(&peers),
+                        Some(peers),
                         button("去配对…")
                             .on_press(Message::SelectPanel(Panel::Device))
                             .padding([8, 14])
@@ -1885,30 +1736,18 @@ fn channel_config_card(state: &UiState) -> Element<'_, Message> {
                 ],
             )
         }
-        Some(client::channel::Channel::Http) => (
-            "HTTP 服务",
-            "连接 ximed server（本机或自建 hub），参数在「设置 · 高级」里维护",
-            vec![settings_item(
-                "服务端",
-                Some("本机 server 跟随桌面进程启动；远程 server 需填地址与账号"),
-                button("前往设置")
-                    .on_press(Message::SelectPanel(Panel::Settings))
-                    .padding([8, 14])
-                    .style(secondary_button)
-                    .into(),
-            )],
-        ),
-        None => (
-            "未知通道",
-            "保存时会被自动移除",
-            vec![banner("配置里出现了无法识别的通道 id", Tone::Error)],
+        // 其它通道不在界面上提供；选中为空时给中性提示
+        _ => (
+            "同步方式",
+            "先在上面的列表里选择一种同步方式",
+            vec![text("").into()],
         ),
     };
 
     settings_group(title, Some(description), items)
 }
 
-/// 「测试连接」条目：WebDAV 与局域网都能独立探测，HTTP 由概览页显示状态。
+/// 「测试连接」条目：WebDAV 发请求、局域网查设备表。
 fn test_item(state: &UiState) -> Element<'_, Message> {
     let mut control = row![].spacing(10).align_y(Alignment::Center);
     let needs_config = state.selected_channel == client::channel::CHANNEL_WEBDAV
@@ -2114,6 +1953,15 @@ fn device_view(state: &UiState) -> Element<'_, Message> {
         identity,
         pairing,
         peers,
+        row![
+            button("保存并应用")
+                .on_press(Message::ApplySettings)
+                .padding([9, 16])
+                .style(primary_button),
+        ],
+        text("设备名改动需要保存；配对结果立即生效，与保存无关。")
+            .size(11)
+            .color(TEXT_FAINT),
         text("连不上时先确认两台设备在同一网络；跨网络请改用 WebDAV 通道。")
             .size(11)
             .color(TEXT_FAINT),
@@ -2246,78 +2094,21 @@ fn settings_view(state: &UiState) -> Element<'_, Message> {
                     .into(),
             ),
             settings_item(
+                "同步方式",
+                Some("局域网直连 / WebDAV 的通道与参数在「同步通道」页"),
+                button("前往")
+                    .on_press(Message::SelectPanel(Panel::Sync))
+                    .padding([6, 12])
+                    .style(secondary_button)
+                    .into(),
+            ),
+            settings_item(
                 "开机自启",
                 Some("尚未实现（需要各平台分别注册）"),
                 text("未支持").size(13).color(TEXT_FAINT).into(),
             ),
         ],
     );
-
-    let mode = if state.draft.http.mode == SyncMode::Local {
-        0
-    } else {
-        1
-    };
-    let mut http_items: Vec<Element<'_, Message>> = vec![
-        tab_bar(&["本机服务器", "远程服务器"], mode, |index| {
-            Message::HttpMode(if index == 0 {
-                SyncMode::Local
-            } else {
-                SyncMode::Remote
-            })
-        }),
-        settings_item(
-            "说明",
-            Some("HTTP 通道默认不出现在同步页，需要时在通道列表里添加"),
-            text("").into(),
-        ),
-    ];
-    if state.draft.http.mode == SyncMode::Remote {
-        http_items.push(settings_item(
-            "服务器地址",
-            Some("自建 hub 或公网 server"),
-            text_control(
-                &state.draft.http.url,
-                "https://hub.example.com",
-                move |value| Message::HttpField {
-                    field: HttpField::Url,
-                    value,
-                },
-            ),
-        ));
-        http_items.push(settings_item(
-            "用户名",
-            Some("Basic Auth 用户名"),
-            text_control(&state.draft.http.username, "", move |value| {
-                Message::HttpField {
-                    field: HttpField::Username,
-                    value,
-                }
-            }),
-        ));
-        http_items.push(settings_item(
-            "密码",
-            Some("明文保存；也可用环境变量注入"),
-            password_control(
-                state.draft.http.password.as_deref().unwrap_or_default(),
-                "",
-                move |value| Message::HttpField {
-                    field: HttpField::Password,
-                    value,
-                },
-            ),
-        ));
-    } else {
-        http_items.push(settings_item(
-            "本机地址",
-            Some("随 server 配置自动推导，无需手填"),
-            text(state.server_url.clone())
-                .size(13)
-                .color(TEXT_MUTED)
-                .into(),
-        ));
-    }
-    let http = settings_group("高级 · HTTP 通道", Some("连接 ximed server"), http_items);
 
     let about = settings_group(
         "关于",
@@ -2340,16 +2131,9 @@ fn settings_view(state: &UiState) -> Element<'_, Message> {
     );
 
     let body = column![
-        panel_header("设置", "数据目录、服务端连接与版本信息"),
+        panel_header("设置", "数据目录与版本信息"),
         general,
-        http,
         about,
-        row![
-            button("保存并应用")
-                .on_press(Message::ApplySettings)
-                .padding([9, 16])
-                .style(primary_button),
-        ],
         text(&state.settings_status).size(12).color(TEXT_MUTED),
     ]
     .spacing(16);
