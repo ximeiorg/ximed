@@ -1839,16 +1839,12 @@ fn device_view(state: &UiState) -> Element<'_, Message> {
 
     let identity = settings_group(
         "本机",
-        Some("设备名只用来让对方认出这台机器，随时可以改"),
+        Some("这一页只显示本机身份与配对状态，配对操作立即生效，不需要保存"),
         vec![
             settings_item(
                 "设备名",
-                Some("建议写清是哪台机器，例如「办公室 Mac」"),
-                text_control(
-                    &state.draft.p2p.device_name,
-                    &state.source,
-                    Message::DeviceName,
-                ),
+                Some("对方在配对时看到的名字；在「同步通道 → 局域网直连」里修改"),
+                text(state.device_name()).size(13).color(TEXT_MUTED).into(),
             ),
             settings_item(
                 "设备标识",
@@ -1935,15 +1931,6 @@ fn device_view(state: &UiState) -> Element<'_, Message> {
         identity,
         pairing,
         peers,
-        row![
-            button("保存并应用")
-                .on_press(Message::ApplySettings)
-                .padding([9, 16])
-                .style(primary_button),
-        ],
-        text("设备名改动需要保存；配对结果立即生效，与保存无关。")
-            .size(11)
-            .color(TEXT_FAINT),
         text("连不上时先确认两台设备在同一网络；跨网络请改用 WebDAV 通道。")
             .size(11)
             .color(TEXT_FAINT),
