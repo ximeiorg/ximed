@@ -13,6 +13,8 @@
   `assets/icon.png`（macOS 22px、其余 32px），退出前 `shutdown()` 主动 drop。
   已验证：KWin 关窗 → 窗口销毁且进程存活；托盘显示 → 新窗口；托盘隐藏 → 销毁；
   托盘退出 → 进程结束（SNI 项同步消失）。
+- **README + 截图（本次）**：新增 README（功能介绍、三种形态、构建/配置、架构、路线图、
+  GPL 许可），并嵌入 `docs/images/overview.png` 与 `docs/images/about.png` 两张界面截图。
 - **许可证转 GPL-3.0-or-later（本次，决策 20 已执行）**：`LICENSE` 换成 GPLv3 全文
   （顶部加 ximed / copyright / or-later 声明）；workspace `license` 改为
   `GPL-3.0-or-later`，app/client 继承；cargo-packager 的 `license-file` 仍指向 LICENSE。
@@ -75,6 +77,7 @@
 
 ## 已完成
 
+- [x] **README + 界面截图（本次）**：概览/关于页截图入库，README 覆盖功能、构建、配置、架构、许可与路线图
 - [x] **许可证转 GPL-3.0-or-later（本次，决策 20）**：LICENSE 全文 + workspace license + About 页 + 文档一致
 - [x] **关于页简化（本次，决策 23）**：侧栏普通入口 + 三张卡（hero / 应用信息 / 开源许可），依赖表收敛为 Cargo.lock 指向
 - [x] **三平台托盘常驻（上次，决策 22）**：`iced::daemon` + 关窗隐藏/销毁重建 + Linux GTK 泵 + 官方图标；手工验证 Linux Wayland 关窗/显示/隐藏/退出全链路
