@@ -979,23 +979,18 @@ fn input_style(_theme: &Theme, status: text_input::Status) -> text_input::Style 
 // ---------------------------------------------------------------------------
 
 fn view(state: &UiState) -> Element<'_, Message> {
-    // 侧栏：品牌 + 分组标题 + 导航项（对齐 xime-setup 的 sidebar 结构）
+    // 侧栏：品牌 + 平铺导航。条目只有五个，分组标题只会制造噪声
     let mut nav = column![brand(), Space::new().height(20)]
         .spacing(2)
         .padding([20, 14]);
-    nav = nav.push(nav_group("同步"));
     nav = nav.push(nav_button("概览", Panel::Status, state.panel));
     // 通道/设备/设置页需要写配置，仅 desktop 形态显示（client-only 无后台写入口）
     if state.local_server {
         nav = nav.push(nav_button("同步通道", Panel::Sync, state.panel));
         nav = nav.push(nav_button("设备", Panel::Device, state.panel));
     }
-    nav = nav.push(Space::new().height(12));
-    nav = nav.push(nav_group("记录"));
     nav = nav.push(nav_button("剪贴板历史", Panel::History, state.panel));
     if state.local_server {
-        nav = nav.push(Space::new().height(12));
-        nav = nav.push(nav_group("系统"));
         nav = nav.push(nav_button("设置", Panel::Settings, state.panel));
     }
 
@@ -1021,19 +1016,6 @@ fn view(state: &UiState) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
-}
-
-/// 侧栏分组标题。
-fn nav_group(title: &str) -> Element<'_, Message> {
-    container(
-        text(title.to_string())
-            .size(12)
-            .font(SEMIBOLD)
-            .color(TEXT_MUTED),
-    )
-    .width(Length::Fill)
-    .padding([0, 10])
-    .into()
 }
 
 /// 品牌区：应用图标 + 名称 + 副标题。
