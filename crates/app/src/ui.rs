@@ -41,8 +41,10 @@ pub enum Panel {
     Device,
     /// 剪贴板历史。
     History,
-    /// 设置：数据目录与版本信息。
+    /// 设置：数据目录与通用设置。
     Settings,
+    /// 关于：版本、作者、功能、许可证与依赖。
+    About,
 }
 
 /// 后台 → UI 的桌面级事件（跨线程 channel 负载）。
@@ -921,6 +923,7 @@ const GREEN: Color = Color::from_rgb8(0x34, 0xd3, 0x99); // 成功 emerald-400
 const GREEN_DIM: Color = Color::from_rgba8(0x34, 0xd3, 0x99, 0.15);
 const RED: Color = Color::from_rgb8(0xfb, 0x71, 0x85); // 危险 rose-400
 const RED_DIM: Color = Color::from_rgba8(0xfb, 0x71, 0x85, 0.15);
+const AMBER: Color = Color::from_rgb8(0xf5, 0xb0, 0x4b); // 提醒 amber-400
 
 /// 圆角（Tailwind rounded-lg/xl）。
 const RADIUS_LG: f32 = 14.0;
@@ -1083,10 +1086,11 @@ fn input_style(_theme: &Theme, status: text_input::Status) -> text_input::Style 
 // ---------------------------------------------------------------------------
 
 fn view(state: &UiState) -> Element<'_, Message> {
-    // 侧栏：品牌 + 平铺导航。条目只有五个，分组标题只会制造噪声
+    // 侧栏：品牌 + 平铺导航。条目不多，分组标题只会制造噪声
     let mut nav = column![brand(), Space::new().height(20)]
         .spacing(2)
-        .padding([20, 14]);
+        .padding([20, 14])
+        .height(Length::Fill);
     nav = nav.push(nav_button("概览", Panel::Status, state.panel));
     // 通道/设备/设置页需要写配置，仅 desktop 形态显示（client-only 无后台写入口）
     if state.local_server {
@@ -1097,6 +1101,9 @@ fn view(state: &UiState) -> Element<'_, Message> {
     if state.local_server {
         nav = nav.push(nav_button("设置", Panel::Settings, state.panel));
     }
+    // 「关于」放侧栏底部；任何形态（desktop / client-only）都可访问
+    nav = nav.push(Space::new().height(Length::Fill));
+    nav = nav.push(nav_button("关于", Panel::About, state.panel));
 
     let sidebar = container(nav)
         .width(200)
@@ -1110,6 +1117,7 @@ fn view(state: &UiState) -> Element<'_, Message> {
         Panel::Device => device_view(state),
         Panel::History => history_view(state),
         Panel::Settings => settings_view(state),
+        Panel::About => about_view(state),
     };
     let content = container(content)
         .width(Length::Fill)
@@ -2191,9 +2199,75 @@ fn settings_view(state: &UiState) -> Element<'_, Message> {
         ],
     );
 
-    let about = settings_group(
-        "关于",
-        None::<&str>,
+    let body = column![
+        panel_header("设置", "数据目录与通用设置"),
+        general,
+        text(&state.settings_status).size(12).color(TEXT_MUTED),
+    ]
+    .spacing(16);
+
+    container(scrollable(body).height(Length::Fill))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+// ---------------------------------------------------------------------------
+// 关于页
+// ---------------------------------------------------------------------------
+
+/// 本项目 / 直接依赖清单：`(crate, version, license)`。
+/// 版本与许可见 `cargo metadata`（2026-11-10）；升级依赖时同步更新。
+const PROJECT_DEPS: &[(&str, &str, &str)] = &[
+    ("client", "0.2.0", "MIT"),
+    ("xime-sync-server", "0.1.0", "MIT"),
+    ("xime-sync-domain", "0.1.0", "GPL-3.0-or-later"),
+    ("xime-sync-store", "0.1.0", "MIT"),
+    ("xime-p2p", "0.1.0", "GPL-3.0-or-later"),
+];
+
+const UI_DEPS: &[(&str, &str, &str)] = &[
+    ("iced", "0.14.0", "MIT"),
+    ("tray-icon", "0.24.2", "MIT OR Apache-2.0"),
+    ("muda", "0.19.3", "Apache-2.0 OR MIT"),
+    ("image", "0.25.10", "MIT OR Apache-2.0"),
+    ("gtk", "0.18.2", "MIT"),
+    ("objc2", "0.6.4", "MIT"),
+    ("objc2-app-kit", "0.3.2", "Zlib OR Apache-2.0 OR MIT"),
+    ("objc2-foundation", "0.3.2", "MIT"),
+];
+
+const BASE_DEPS: &[(&str, &str, &str)] = &[
+    ("tokio", "1.53.1", "MIT"),
+    ("serde", "1.0.229", "MIT OR Apache-2.0"),
+    ("toml", "0.9.12", "MIT OR Apache-2.0"),
+    ("clap", "4.6.5", "MIT OR Apache-2.0"),
+    ("tracing", "0.1.44", "MIT"),
+    ("tracing-subscriber", "0.3.23", "MIT"),
+    ("getrandom", "0.3.4", "MIT OR Apache-2.0"),
+    ("base64", "0.22.1", "MIT OR Apache-2.0"),
+    ("arboard", "3.6.1", "MIT OR Apache-2.0"),
+    ("config", "0.15.27", "MIT OR Apache-2.0"),
+    ("reqwest", "0.12.28", "MIT OR Apache-2.0"),
+    ("serde_json", "1.0.151", "MIT OR Apache-2.0"),
+    ("thiserror", "2.0.21", "MIT OR Apache-2.0"),
+    ("http", "1.5.0", "MIT OR Apache-2.0"),
+    ("tokio-tungstenite", "0.24.0", "MIT"),
+    ("futures-util", "0.3.33", "MIT OR Apache-2.0"),
+    ("async-trait", "0.1.91", "MIT OR Apache-2.0"),
+    ("embed-resource", "3.0.11", "MIT"),
+];
+
+/// 关于页：版本 / 作者 / 功能 / 许可证 / 直接依赖。
+fn about_view(_state: &UiState) -> Element<'_, Message> {
+    let build = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    let info = settings_group(
+        "应用",
+        Some("输入法数据同步服务（桌面形态）"),
         vec![
             settings_item(
                 "版本",
@@ -2204,6 +2278,36 @@ fn settings_view(state: &UiState) -> Element<'_, Message> {
                     .into(),
             ),
             settings_item(
+                "作者",
+                Some("ximeiorg"),
+                text("kingzcheung").size(13).color(TEXT_MUTED).into(),
+            ),
+            settings_item(
+                "仓库",
+                Some("GitHub"),
+                text("github.com/ximeiorg/ximed")
+                    .size(13)
+                    .color(TEXT_MUTED)
+                    .into(),
+            ),
+            settings_item(
+                "平台",
+                Some("当前运行环境"),
+                text(format!(
+                    "{} {}",
+                    std::env::consts::OS,
+                    std::env::consts::ARCH
+                ))
+                .size(13)
+                .color(TEXT_MUTED)
+                .into(),
+            ),
+            settings_item(
+                "构建",
+                Some("编译配置"),
+                text(build).size(13).color(TEXT_MUTED).into(),
+            ),
+            settings_item(
                 "同步协议",
                 Some("与 XimeYi / Android 共用通道语义"),
                 text("ximed sync v1").size(13).color(TEXT_MUTED).into(),
@@ -2211,11 +2315,72 @@ fn settings_view(state: &UiState) -> Element<'_, Message> {
         ],
     );
 
+    let features = settings_group(
+        "功能",
+        Some("桌面版当前具备的能力"),
+        vec![
+            feature_row(
+                "多通道同步",
+                "局域网直连（P2P）与 WebDAV 两种原生通道，未选择时走内置 HTTP 回退。",
+            ),
+            feature_row(
+                "剪贴板同步",
+                "文本与图片双向同步，可分别控制上传/下载内容。",
+            ),
+            feature_row("剪贴板历史", "本机保留最近记录，随时回看与复制。"),
+            feature_row("设备配对", "局域网设备用 6 位码配对，建立信任后直连同步。"),
+            feature_row(
+                "常驻托盘",
+                "Windows / Linux / macOS 关窗不退出，可从托盘恢复窗口或退出。",
+            ),
+            feature_row(
+                "低占用",
+                "桌面形态单进程；服务器形态可关闭 UI 与托盘，适合低性能设备。",
+            ),
+        ],
+    );
+
+    let license = settings_group(
+        "许可证",
+        Some("本仓库与第三方组件的授权情况"),
+        vec![
+            settings_item(
+                "本仓库",
+                Some("MIT License · Copyright (c) 2026 kingzcheung"),
+                badge("MIT", GREEN, GREEN_DIM),
+            ),
+            settings_item(
+                "GPL 组件",
+                Some("xime-p2p、xime-sync-domain 为 GPL-3.0-or-later"),
+                badge("GPL-3.0-or-later", RED, RED_DIM),
+            ),
+            banner(
+                "桌面版默认链入 GPL-3.0-or-later 组件；正式分发时整体需按 GPL 处理，仓库 LICENSE 目前仍为 MIT。",
+                Tone::Warning,
+            ),
+            text("MIT 许可证全文见仓库根目录 LICENSE。")
+                .size(12)
+                .color(TEXT_FAINT)
+                .into(),
+        ],
+    );
+
+    let dependencies = column![
+        dependency_group("核心与同步", "app / client 的直接依赖", PROJECT_DEPS),
+        dependency_group("桌面界面", "GUI、托盘与平台绑定（按平台启用）", UI_DEPS),
+        dependency_group("基础依赖", "网络、序列化、日志与剪贴板", BASE_DEPS),
+        text("仅列 app 与 client 的直接依赖（不含 dev-dependencies）；完整传递依赖与精确版本见 Cargo.lock。")
+            .size(12)
+            .color(TEXT_FAINT),
+    ]
+    .spacing(16);
+
     let body = column![
-        panel_header("设置", "数据目录与版本信息"),
-        general,
-        about,
-        text(&state.settings_status).size(12).color(TEXT_MUTED),
+        panel_header("关于", "版本、作者、功能、许可证与依赖"),
+        info,
+        features,
+        license,
+        dependencies,
     ]
     .spacing(16);
 
@@ -2223,6 +2388,77 @@ fn settings_view(state: &UiState) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
+}
+
+/// 依赖分组卡片：表头 + 每行 name / version / license。
+fn dependency_group(
+    title: &'static str,
+    description: &'static str,
+    deps: &'static [(&'static str, &'static str, &'static str)],
+) -> Element<'static, Message> {
+    let mut items: Vec<Element<'static, Message>> = Vec::with_capacity(deps.len() + 1);
+    items.push(dependency_header());
+    for (name, version, license) in deps {
+        items.push(dependency_row(name, version, license));
+    }
+    settings_group(title, Some(description), items)
+}
+
+fn dependency_header() -> Element<'static, Message> {
+    row![
+        text("组件").size(11).color(TEXT_FAINT).width(Length::Fill),
+        text("版本")
+            .size(11)
+            .color(TEXT_FAINT)
+            .width(Length::Fixed(90.0)),
+        text("许可证")
+            .size(11)
+            .color(TEXT_FAINT)
+            .width(Length::Fixed(210.0)),
+    ]
+    .spacing(8)
+    .padding([4, 4])
+    .into()
+}
+
+fn dependency_row(
+    name: &'static str,
+    version: &'static str,
+    license: &'static str,
+) -> Element<'static, Message> {
+    let is_gpl = license.contains("GPL");
+    row![
+        text(name).size(13).color(TEXT_MAIN).width(Length::Fill),
+        text(version)
+            .size(12)
+            .color(TEXT_MUTED)
+            .width(Length::Fixed(90.0)),
+        text(license)
+            .size(11)
+            .color(if is_gpl { RED } else { TEXT_FAINT })
+            .width(Length::Fixed(210.0)),
+    ]
+    .spacing(8)
+    .padding([6, 4])
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// 功能条目：主色圆点 + 标题 + 说明。
+fn feature_row(title: &'static str, description: &'static str) -> Element<'static, Message> {
+    row![
+        container(text("•").size(14).color(ACCENT)).width(Length::Fixed(14.0)),
+        column![
+            text(title).size(14).color(TEXT_MAIN),
+            text(description).size(12).color(TEXT_MUTED),
+        ]
+        .spacing(3)
+        .width(Length::Fill),
+    ]
+    .spacing(6)
+    .padding([8, 0])
+    .align_y(Alignment::Center)
+    .into()
 }
 
 // ---------------------------------------------------------------------------
@@ -2393,6 +2629,7 @@ fn badge<'a>(label: impl Into<String>, fg: Color, bg: Color) -> Element<'a, Mess
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tone {
     Info,
+    Warning,
     Error,
 }
 
@@ -2400,6 +2637,7 @@ enum Tone {
 fn banner<'a>(message: impl Into<String>, tone: Tone) -> Element<'a, Message> {
     let accent = match tone {
         Tone::Info => ACCENT,
+        Tone::Warning => AMBER,
         Tone::Error => RED,
     };
     container(text(message.into()).size(13).color(accent))
@@ -2520,6 +2758,18 @@ fn backend_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gpl_dependencies_are_marked() {
+        // 关于页的许可证列表必须如实标注 GPL 组件，避免被误写成 MIT。
+        for name in ["xime-p2p", "xime-sync-domain"] {
+            let dep = PROJECT_DEPS
+                .iter()
+                .find(|(crate_name, _, _)| *crate_name == name)
+                .unwrap_or_else(|| panic!("{name} missing from PROJECT_DEPS"));
+            assert_eq!(dep.2, "GPL-3.0-or-later", "{name} license");
+        }
+    }
 
     #[test]
     fn sidebar_logo_handle_is_cached() {

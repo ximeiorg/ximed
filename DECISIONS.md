@@ -281,3 +281,21 @@ channels = ["p2p", "webdav"]
 已知边角（后续）：macOS 无窗口时点 Dock 图标不会恢复（winit 没有 reopen 事件）；
 GNOME 无 AppIndicator 扩展时托盘不可见，需探测 StatusNotifierWatcher 后回退成关窗即退出；
 开机自启尚未做。
+
+
+## 23. 关于页：信息源与许可证呈现（2026-11-10）
+
+侧栏底部新增独立「关于」页（`Panel::About`），Settings 里原来那个只显示版本/协议的
+迷你「关于」组删除，避免两处信息不一致。
+
+- **内容**：应用信息（版本 `CARGO_PKG_VERSION`、作者 kingzcheung / ximeiorg、仓库、
+  运行平台、debug/release、同步协议）+ 功能清单 + 许可证 + 直接依赖清单。
+- **依赖清单只列 app / client 的直接依赖**：完整传递依赖上百个，全列会把页面淹掉；
+  每行给 crate / 版本 / 许可证，GPL 组件标红。版本与许可证取自 `cargo metadata`
+  （2026-11-10），是静态常量——升级依赖时同步更新；暂不在 build.rs 里跑
+  `cargo metadata`（构建期递归调 cargo 慢且有副作用），后续可改成独立脚本 + CI 校验。
+- **许可证如实呈现**：本仓库 LICENSE 目前是 MIT，但桌面版默认经 `tray` → `client/p2p`
+  链入 `xime-p2p`，且 `xime-sync-domain` 也是 GPL-3.0-or-later。关于页同时显示 MIT
+  与 GPL 组件，并提示「整体分发需按 GPL 处理、LICENSE 仍为 MIT」；这与决策 20 的待决
+  状态一致，不把 MIT 当成整个二进制的许可证。测试 `gpl_dependencies_are_marked`
+  锁住这两个组件的 GPL 标注。

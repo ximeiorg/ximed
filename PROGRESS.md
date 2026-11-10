@@ -13,7 +13,11 @@
   `assets/icon.png`（macOS 22px、其余 32px），退出前 `shutdown()` 主动 drop。
   已验证：KWin 关窗 → 窗口销毁且进程存活；托盘显示 → 新窗口；托盘隐藏 → 销毁；
   托盘退出 → 进程结束（SNI 项同步消失）。
-- **选中态字体统一（本次）**：侧栏导航选中项不再切 `Weight::Semibold`——Linux 的
+- **关于页（本次，决策 23）**：侧栏底部新增「关于」，内容为应用信息（版本 / 作者 / 仓库 /
+  平台 / 构建 / 协议）、功能清单、许可证（MIT + GPL 组件提示）、直接依赖清单（app/client
+  的 crate 与版本/许可，GPL 标红）。Settings 里旧的迷你「关于」组删除。依赖清单是静态
+  常量（取自 `cargo metadata` 2026-11-10），升级依赖时同步；测试锁定 GPL 组件标注。
+- **选中态字体统一（上次）**：侧栏导航选中项不再切 `Weight::Semibold`——Linux 的
   Noto Sans CJK 没有 Semibold 面，fontconfig 会替换成 Bold（`fc-match` 实测），
   同一列表的选中/未选中看起来像换了字体。选中改用主色 + 实心圆点 + 浅底表达。
 - **HTTP 从界面移除（上次，决策 21）**：同步页只列局域网直连 / WebDAV；设置页删掉
@@ -47,7 +51,7 @@
 - **P0 依赖迁移（fdf929a）**：domain 迁 libximep2p（pin `b19ecde`）+ patch 拆段
 
 验证：`cargo check --workspace`（默认 / `--no-default-features`）双绿；
-`cargo test --workspace` 71 项通过（client 54 + app 17）；fmt 干净。
+`cargo test --workspace` 72 项通过（client 54 + app 18）；fmt 干净。
 托盘额外做了 Linux Wayland 实机验证（D-Bus StatusNotifierItem/DBusMenu + KWin 脚本
 关窗，见上）；Windows/macOS 本轮只做代码路径审查，未实机跑。
 
@@ -59,18 +63,21 @@
 2. **配对端口的长期方案**：当前靠「配对前暂停节点」绕开端口冲突，代价是配对期间同步
    中断。上游给 `Watcher::bind` 加 `SO_REUSEADDR`（或配对改用临时端口 + 公告真实端口）
    后可去掉暂停逻辑
-3. **托盘/常驻的边角**：macOS Dock 图标在无窗口时点击不会恢复窗口（winit 没有
+3. **关于页依赖清单自动化**：当前是手写静态表，升级依赖后容易过期；可评估从
+   `cargo metadata` 生成（build.rs 直接跑 cargo 有递归风险，建议独立脚本 + CI 校验）
+4. **托盘/常驻的边角**：macOS Dock 图标在无窗口时点击不会恢复窗口（winit 没有
    reopen 事件，当前只能从菜单栏托盘恢复）；GNOME 无 AppIndicator 扩展时托盘不可见，
    需要探测 StatusNotifierWatcher 并回退成「关窗即退出」；开机自启（三平台）尚未做
-4. 文件同步（跨平台剪贴板文件路径读写，工程量最大）
-5. macOS .app 打包（LSUIElement + 图标）
-6. **LICENSE 待决**：`xime-p2p` / `xime-sync-domain` 均为 GPL-3.0-or-later，而桌面形态
+5. 文件同步（跨平台剪贴板文件路径读写，工程量最大）
+6. macOS .app 打包（LSUIElement + 图标）
+7. **LICENSE 待决**：`xime-p2p` / `xime-sync-domain` 均为 GPL-3.0-or-later，而桌面形态
    现在默认编入 p2p（`tray` feature 依赖 `client/p2p`），默认产物已是 GPL 代码——
    需要把本仓 LICENSE 整体转 GPL-3.0-or-later（与 XimeYi / Android 一致）
 
 ## 已完成
 
-- [x] **三平台托盘常驻（本次，决策 22）**：`iced::daemon` + 关窗隐藏/销毁重建 + Linux GTK 泵 + 官方图标；手工验证 Linux Wayland 关窗/显示/隐藏/退出全链路
+- [x] **关于页（本次，决策 23）**：版本/作者/功能/许可证/直接依赖；GPL 组件明确提示，Settings 旧迷你关于组移除
+- [x] **三平台托盘常驻（上次，决策 22）**：`iced::daemon` + 关窗隐藏/销毁重建 + Linux GTK 泵 + 官方图标；手工验证 Linux Wayland 关窗/显示/隐藏/退出全链路
 - [x] **R2/R3 桌面重构（上次）**：五页 IA + 通道模型/配置迁移 + `Router` 降级 + P2P 配对页；`UiState` 改单一草稿；视觉对齐 xime-setup 组件（详见决策 17~19）
 - [x] **插件体系移除（决策 16）**：client 插件模块/feature/依赖、AdapterKind、app 插件 UI 与 8 个消息全部删除；旧配置字段被 serde 忽略、回落 HTTP 通道；59 项测试通过
 - [x] **P1 局域网 P2P 设备层（d520929）**：`client/src/p2p.rs` 节点单例 + 数据目录 + 连接态 + 已配对设备读取；feature `p2p` 默认关；`cargo test -p client --features p2p` 4 项通过（详见决策 15）
