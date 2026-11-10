@@ -16,6 +16,8 @@
 //! - 后台线程：tokio runtime（server + client 引擎 + 历史轮询）
 //! - 桥接：mpsc channel，后台线程发 [`UiMsg`] 给 UI；UI 经 [`UiCmd`] 通道命令后台
 
+use std::sync::OnceLock;
+
 use client::config::ClientConfig;
 use client::history::HistoryItem;
 use iced::font::Weight;
@@ -99,6 +101,10 @@ pub enum ChannelField {
     WebDavPassword,
     P2pName,
 }
+
+/// Linux 托盘泵间隔：GLib 要驱动，但没必要每帧重建整个 UI。
+#[cfg(target_os = "linux")]
+const TRAY_PUMP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// UI 消息（iced Message：channel 事件 + 按钮动作）。
 #[derive(Debug, Clone)]
@@ -380,9 +386,7 @@ pub fn run_ui(
         // Linux 托盘走 GTK/AppIndicator，GLib 主上下文需要被周期性驱动，
         // 否则托盘项不注册、菜单点击没反应（见 tray 模块文档）。
         #[cfg(target_os = "linux")]
-        subscriptions.push(
-            iced::time::every(std::time::Duration::from_millis(100)).map(|_| Message::PumpTray),
-        );
+        subscriptions.push(iced::time::every(TRAY_PUMP_INTERVAL).map(|_| Message::PumpTray));
         Subscription::batch(subscriptions)
     })
     .theme(move |state: &UiState, _window| Some(theme(state)))
@@ -1118,14 +1122,20 @@ fn view(state: &UiState) -> Element<'_, Message> {
         .into()
 }
 
+/// 侧栏 logo 的图片句柄：整个进程只创建一次。
+///
+/// `image::Handle::from_bytes` 每次都会生成新的 `Id`，渲染器会据此重新解码/上传
+/// 纹理；如果在每个 `view()` 里新建，任何重绘都会让 logo 闪一下。
+fn sidebar_logo() -> image::Handle {
+    static LOGO: OnceLock<image::Handle> = OnceLock::new();
+    LOGO.get_or_init(|| image::Handle::from_bytes(include_bytes!("../assets/icon.png").as_slice()))
+        .clone()
+}
+
 /// 品牌区：应用图标 + 名称 + 副标题。
 fn brand() -> Element<'static, Message> {
     // 编译期嵌入应用图标（1024×1024 RGBA），与窗口图标同源。
-    let logo = image(image::Handle::from_bytes(
-        include_bytes!("../assets/icon.png").as_slice(),
-    ))
-    .width(28)
-    .height(28);
+    let logo = image(sidebar_logo()).width(28).height(28);
     row![
         logo,
         column![
@@ -2508,6 +2518,12 @@ fn backend_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sidebar_logo_handle_is_cached() {
+        // Handle 的 Id 相同，渲染器才会复用已上传的纹理；每次 view 新建会闪。
+        assert_eq!(sidebar_logo(), sidebar_logo());
+    }
 
     #[test]
     fn format_time_buckets() {

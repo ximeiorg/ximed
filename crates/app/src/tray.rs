@@ -14,7 +14,7 @@
 //! - **Linux**：tray-icon 走 GTK + libayatana-appindicator，StatusNotifierItem
 //!   注册与 DBusMenu 激活都依赖 **GLib 主上下文**被驱动。iced 的 winit 事件循环
 //!   不是 GTK 主循环，只 `gtk::init()` 而不迭代的话，托盘项不会出现在面板上、
-//!   菜单点击也没有反应。因此这里在 iced 主线程初始化 GTK，并由 UI 的 100ms
+//!   菜单点击也没有反应。因此这里在 iced 主线程初始化 GTK，并由 UI 的 200ms
 //!   定时器调用 [`pump`] 驱动 GTK 事件；所有 GTK 调用都留在主线程。
 //!
 //! 其他注意：

@@ -257,11 +257,15 @@ channels = ["p2p", "webdav"]
 - **Linux 托盘必须泵 GLib 主上下文**：tray-icon 的 GTK 后端是
   libayatana-appindicator，SNI 注册与 DBusMenu 激活都挂在 GLib 默认上下文上；只
   `gtk::init()` 而 iced/winit 不跑 GTK 主循环时，托盘项**不会注册**、菜单点了也没反应
-  （已用 D-Bus 实测）。因此在 iced 主线程初始化 GTK，并在 UI 订阅里加一条 100ms 定时器
+  （已用 D-Bus 实测）。因此在 iced 主线程初始化 GTK，并在 UI 订阅里加一条 200ms 定时器
   调 `gtk::main_iteration_do(false)`；所有 GTK 调用保持主线程。Windows/macOS 由
   tray-icon 自己的消息循环驱动，pump 为空实现。
 - **托盘图标用官方 `assets/icon.png`**：macOS 22px、其余 32px，按平台 Lanczos 缩放；
   不再程序化画蓝点。macOS 不开 template——源图有不透明圆角底，template 会变成实心块。
+- **侧栏 logo 的 `image::Handle` 必须缓存**：`Handle::from_bytes` 每次生成新 `Id`，
+  渲染器会重新上传纹理；泵把 UI 重绘频率抬高后，表现为 logo 持续闪烁。用
+  `OnceLock` 只建一次，`view` 里 clone 同一个句柄。泵间隔取 200ms（5Hz），
+  在菜单响应与空转开销之间折中。
 - **托盘句柄存主线程 thread-local**：既保证托盘活到进程结束，又在退出前 `shutdown()`
   主动 drop，让 Windows 立即删图标、Linux 删临时 PNG（`Box::leak` 做不到）。
 - **托盘创建失败则关窗即退出**：不能把窗口藏起来让用户既看不到界面也无法退出。

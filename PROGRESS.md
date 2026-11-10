@@ -7,8 +7,9 @@
 - **托盘常驻（本次，决策 22）**：窗口改由 `iced::daemon` 承载——关窗不再退出进程，托盘菜单
   「显示主窗口 / 隐藏到托盘 / 退出 ximed」。Windows/macOS/X11 关窗走 `Mode::Hidden`
   保留窗口；Wayland 的 `set_visible` 是 no-op，改为销毁窗口、托盘恢复时按原设置重建。
-  Linux 托盘补齐 GTK/GLib 泵（`gtk_main_iteration_do`，UI 100ms 订阅）——只 `gtk::init()`
-  不迭代时 AppIndicator 的 SNI 根本不注册、菜单点击无响应。托盘图标改用
+  Linux 托盘补齐 GTK/GLib 泵（`gtk_main_iteration_do`，UI 200ms 订阅）——只 `gtk::init()`
+  不迭代时 AppIndicator 的 SNI 根本不注册、菜单点击无响应。侧栏 logo 的
+  `image::Handle` 改为进程级缓存（每个 view 新建会换纹理 Id，泵一快就闪）。托盘图标改用
   `assets/icon.png`（macOS 22px、其余 32px），退出前 `shutdown()` 主动 drop。
   已验证：KWin 关窗 → 窗口销毁且进程存活；托盘显示 → 新窗口；托盘隐藏 → 销毁；
   托盘退出 → 进程结束（SNI 项同步消失）。
@@ -43,7 +44,7 @@
 - **P0 依赖迁移（fdf929a）**：domain 迁 libximep2p（pin `b19ecde`）+ patch 拆段
 
 验证：`cargo check --workspace`（默认 / `--no-default-features`）双绿；
-`cargo test --workspace` 70 项通过（client 54 + app 16）；fmt 干净。
+`cargo test --workspace` 71 项通过（client 54 + app 17）；fmt 干净。
 托盘额外做了 Linux Wayland 实机验证（D-Bus StatusNotifierItem/DBusMenu + KWin 脚本
 关窗，见上）；Windows/macOS 本轮只做代码路径审查，未实机跑。
 
