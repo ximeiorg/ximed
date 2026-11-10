@@ -103,9 +103,9 @@ hub（手机 Xime IME 走 HTTP 事件驱动连它）与官方远端协议端点�
 - **client 的 `config` 下限抬到 0.15.27**：`xime-sync-server` 的 workspace 声明是
   `^0.15.27`，两侧下限不一致时同一依赖图无法统一到同一版本（`cargo update` 单包
   更新会来回互相卡死）。
-- **许可证待决**：`xime-sync-domain` 现为 GPL-3.0-or-later（原来在 libximecore 里是
-  MIT），libximep2p 的 `xime-p2p` 同为 GPL。ximed 目前是 MIT——接入 p2p 后整体分发
-  必须转 GPL-3.0-or-later（与 XimeYi / Android 一致），尚未改动 LICENSE。
+- **许可证**：`xime-sync-domain` 现为 GPL-3.0-or-later（原来在 libximecore 里是
+  MIT），libximep2p 的 `xime-p2p` 同为 GPL。ximed 当时仍是 MIT——接入 p2p 后整体分发
+  必须转 GPL-3.0-or-later；这条已在决策 20 执行完毕。
 
 ## 15. 局域网直连：节点归设备层单例，feature 默认关（2026-11-10）
 
@@ -207,14 +207,23 @@ channels = ["p2p", "webdav"]
   同一列表的选中/未选中看起来像两种字体。选中只用主色 + 实心圆点 + 浅底，
   字重保持与未选中一致。
 
-## 20. LICENSE：p2p 并入默认桌面产物后必须转 GPL（待决，2026-11-10）
+## 20. LICENSE：已切换为 GPL-3.0-or-later（2026-11-10 执行）
 
-`xime-p2p` 与当前的 `xime-sync-domain` 都是 GPL-3.0-or-later，本仓仍是 MIT。
-决策 15 把 p2p 放在默认关闭的 feature 里，默认产物还没引入 GPL 代码；本次为了做设备页，
-`tray` feature 依赖了 `client/p2p`，**默认桌面产物已是 GPL 代码**。
+背景：`xime-p2p` 与 `xime-sync-domain` 都是 GPL-3.0-or-later；`tray` feature 默认
+依赖 `client/p2p`，默认桌面产物早已链入 GPL 代码，继续以 MIT 分发不成立。
 
-需要拍板：把 `LICENSE` 整体换成 GPL-3.0-or-later（与 XimeYi / Android 一致），
-或者把设备页从默认构建里摘出去（feature 化）——后者会让桌面版默认没有局域网直连。
+决定：**整体转 GPL-3.0-or-later**（与 XimeYi / Android 一致），不采用「把设备页
+feature 化」的规避方案——局域网直连是桌面版的产品核心。
+
+- `LICENSE` 换成 GPLv3 全文，顶部保留 ximed / Copyright (C) 2026 kingzcheung /
+  “either version 3 ... or any later version” 声明；GPL 文本本身不改。
+- workspace `Cargo.toml` 的 `license = "GPL-3.0-or-later"`；app / client 的
+  `license.workspace = true` 自动继承；cargo-packager 的 `license-file` 继续指向
+  `LICENSE`。
+- 关于页的许可证卡改为 GPL-3.0-or-later（`APP_LICENSE` 取自 `CARGO_PKG_LICENSE`，
+  测试 `app_license_is_gpl` 防止回退）。
+- 兼容性：现有依赖是 MIT / Apache-2.0 / Zlib 等宽松许可，与 GPL 兼容；xime-p2p /
+  xime-sync-domain 同为 GPL。再分发二进制时需同时提供对应源码。
 
 ## 21. HTTP 通道从界面彻底移除，只留后台回退（2026-11-10）
 
@@ -283,19 +292,19 @@ GNOME 无 AppIndicator 扩展时托盘不可见，需探测 StatusNotifierWatche
 开机自启尚未做。
 
 
-## 23. 关于页：信息源与许可证呈现（2026-11-10）
+## 23. 关于页：对齐 xime-setup 的简洁信息页（2026-11-10）
 
-侧栏底部新增独立「关于」页（`Panel::About`），Settings 里原来那个只显示版本/协议的
-迷你「关于」组删除，避免两处信息不一致。
+`Panel::About` 入口放在侧栏普通导航里（不再用 Fill 垫到底部），desktop / client-only
+都可访问；Settings 里旧迷你「关于」组删除。
 
-- **内容**：应用信息（版本 `CARGO_PKG_VERSION`、作者 kingzcheung / ximeiorg、仓库、
-  运行平台、debug/release、同步协议）+ 功能清单 + 许可证 + 直接依赖清单。
-- **依赖清单只列 app / client 的直接依赖**：完整传递依赖上百个，全列会把页面淹掉；
-  每行给 crate / 版本 / 许可证，GPL 组件标红。版本与许可证取自 `cargo metadata`
-  （2026-11-10），是静态常量——升级依赖时同步更新；暂不在 build.rs 里跑
-  `cargo metadata`（构建期递归调 cargo 慢且有副作用），后续可改成独立脚本 + CI 校验。
-- **许可证如实呈现**：本仓库 LICENSE 目前是 MIT，但桌面版默认经 `tray` → `client/p2p`
-  链入 `xime-p2p`，且 `xime-sync-domain` 也是 GPL-3.0-or-later。关于页同时显示 MIT
-  与 GPL 组件，并提示「整体分发需按 GPL 处理、LICENSE 仍为 MIT」；这与决策 20 的待决
-  状态一致，不把 MIT 当成整个二进制的许可证。测试 `gpl_dependencies_are_marked`
-  锁住这两个组件的 GPL 标注。
+- **结构参考 `libximecore/crates/xime-setup/src/pages/about.rs`**：三张卡即止——
+  1. 品牌 hero：logo、名称、版本胶囊、一句话功能（局域网直连 / WebDAV / 剪贴板 /
+     托盘常驻）；
+  2. 应用信息：作者、运行平台、仓库、主要依赖 + 「完整依赖清单见 Cargo.lock」；
+  3. 开源许可：GPL-3.0-or-later 胶囊、版权、许可证指引、技术栈。
+- **不再内嵌依赖表**：之前列了 31 行 app/client 直接依赖，信息密度过高、且静态
+  版本表容易过期；现在只给主要依赖与 Cargo.lock 指针。功能也从 6 条列表收敛成
+  hero 里的一句话。
+- **许可证与决策 20 一致**：显示 GPL-3.0-or-later（`APP_LICENSE` 取自
+  `CARGO_PKG_LICENSE`），不再出现 MIT/GPL 并存的提示；`app_license_is_gpl`
+  测试防止许可证回退。
