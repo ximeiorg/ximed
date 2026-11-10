@@ -13,6 +13,11 @@
   `assets/icon.png`（macOS 22px、其余 32px），退出前 `shutdown()` 主动 drop。
   已验证：KWin 关窗 → 窗口销毁且进程存活；托盘显示 → 新窗口；托盘隐藏 → 销毁；
   托盘退出 → 进程结束（SNI 项同步消失）。
+- **CI 依赖源修复（本次）**：`.cargo/config.toml` 虽然被 .gitignore 覆盖，但历史上已被 git
+  跟踪；CI checkout 后它仍存在，patch 指向不存在的 `../libximecore`，导致 clippy/test 在
+  解析依赖阶段直接失败。已 `git rm --cached`，`Cargo.lock` 的 5 个上游 crate 恢复 git
+  source（libximecore `04d6ca9`、libximep2p `b19ecde`）。本地 patch 只作临时 override，
+  跑完 `git restore Cargo.lock`。
 - **自动构建调整（本次）**：`build-packages.yml` 只保留三平台桌面包（Windows x64 /
   Linux x64 / macOS arm64+x64），删除 server 与 Linux ARM/musl 目标；Linux 产物改为
   deb + AppImage + rpm，rpm 用 `cargo-generate-rpm` 生成（配置在
@@ -85,6 +90,7 @@
 
 ## 已完成
 
+- [x] **CI 依赖源修复（本次）**：移除误跟踪的 `.cargo/config.toml`，Cargo.lock 恢复 git source；CI 无 patch 跑通 clippy/test
 - [x] **自动构建收敛（本次）**：三平台 desktop-only；Linux deb/rpm/AppImage；删除 server/ARM 目标
 - [x] **README + 界面截图（本次）**：概览/关于页截图入库，README 覆盖功能、构建、配置、架构、许可与路线图
 - [x] **许可证转 GPL-3.0-or-later（本次，决策 20）**：LICENSE 全文 + workspace license + About 页 + 文档一致

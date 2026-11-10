@@ -9,7 +9,8 @@ license = "GPL-3.0-or-later"
 
 [workspace.dependencies]
 # libximecore / libximep2p — shared crates (git dep, patched to local for development, 同 XimeChe 模式)
-# 本地开发用 .cargo/config.toml（gitignored）patch 回 ../libximecore / ../libximep2p 路径
+# 本地开发可自建 .cargo/config.toml（gitignored）patch 回 ../libximecore / ../libximep2p；
+# 该文件不入库，CI/发布使用 git 依赖。本地 patch 会改 Cargo.lock 的 source，提交前 restore。
 #
 # xime-sync-domain 已从 libximecore 迁到 libximep2p（见 libximecore ea8e300），
 # 必须与 libximecore 内部使用的 rev 完全一致：两边若指向不同 rev，会解析出两个

@@ -342,3 +342,30 @@ README、关于页和路线图按这个口径描述，不再把 HTTP 回退或 s
   AppImage/deb 仍由 cargo-packager 自动生成 desktop/icon。
 - 构建仍使用 `actions-rust-cross` 产出的 `target/<target>/release/ximed-desktop`，
   `cargo-generate-rpm` 只打包不重编。
+
+
+## 26. 依赖源：CI 用 git + Cargo.lock，本地 patch 不入库（2026-11-10）
+
+CI 在依赖解析阶段报：
+
+```text
+patch location `/home/runner/work/ximed/libximecore/crates/xime-sync-server`
+does not contain packages matching `xime-sync-server`
+```
+
+原因：`.cargo/config.toml` 虽然写在 `.gitignore` 里，但历史上已经被 git 跟踪（ignore 对
+已跟踪文件无效）。CI checkout 后该文件存在，`[patch]` 指向 `../libximecore` /
+`../libximep2p`，而 runner 上没有这两个目录，`--locked` 直接失败。
+
+处理：
+
+- `git rm --cached .cargo/config.toml`：文件从索引移除，本地文件保留、继续被 ignore。
+- `Cargo.lock` 恢复 5 个上游 crate 的 git source：
+  - `xime-p2p` / `xime-sync-domain`：libximep2p rev `b19ecde`
+  - `xime-sync-server` / `xime-sync-service` / `xime-sync-store`：libximecore
+    commit `04d6ca9`（Cargo.lock 锁定，CI `--locked` 可复现）
+- CI / 发布构建始终使用 git 依赖；本地 patch 只作为开发时临时 override。带 patch 跑
+  `cargo check` 会把 lock 改成 path source，提交前必须 `git restore Cargo.lock`；带
+  patch 时不要加 `--locked`（会报 lock 需要更新）。
+- 已在无 patch 环境下原样跑通 CI 的 clippy（默认 + 无默认特性）与
+  `cargo test --workspace --all-targets --locked`。

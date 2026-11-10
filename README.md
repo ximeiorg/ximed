@@ -62,7 +62,9 @@ crates/app      三个二进制入口 + iced UI + 系统托盘
 crates/client   同步引擎、传输通道（P2P / WebDAV）、剪贴板、历史
 ```
 
-同步协议与领域类型复用 libximecore / libximep2p 的上游 crate（具体 rev 由 Cargo.lock 锁定）。本地开发时 `.cargo/config.toml` 可把这两个仓库 patch 到同级目录；CI 与发布构建使用 git 依赖。
+同步协议与领域类型复用 libximecore / libximep2p 的上游 crate（具体 rev 由 Cargo.lock 锁定）。
+
+本地开发若需要改上游，可自行创建 gitignored 的 `.cargo/config.toml` 把这两个仓库 patch 到同级目录；该文件不入库，CI 与发布构建始终使用 git 依赖。注意本地 patch 会把 `Cargo.lock` 的 source 改成 path，提交前执行 `git restore Cargo.lock`。
 
 ## 关于页
 
