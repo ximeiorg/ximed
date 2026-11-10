@@ -16,6 +16,72 @@ pub enum AdapterKind {
     Plugin,
 }
 
+/// WebDAV 通道设置：把当前剪贴板当作网盘上的一个 JSON 文件。
+///
+/// 语义与 HTTP 通道一致（单值、最后写入胜出），只是载体换成用户自己的网盘：
+/// 不依赖 ximed server，也不需要插件。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebDavSettings {
+    /// 网盘上的目录地址，如 `https://dav.jianguoyun.com/dav/ximed`。
+    #[serde(default)]
+    pub url: String,
+    /// 目录下的文件名（相对路径），默认 `clipboard.json`。
+    #[serde(default = "default_webdav_file")]
+    pub file: String,
+    /// Basic Auth 用户名。
+    #[serde(default)]
+    pub username: String,
+    /// 密码来源环境变量；未设置时回退 `password` 字段。
+    #[serde(default = "default_webdav_password_env")]
+    pub password_env: String,
+    /// 密码（敏感项，优先走环境变量）。
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+impl Default for WebDavSettings {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            file: default_webdav_file(),
+            username: String::new(),
+            password_env: default_webdav_password_env(),
+            password: None,
+        }
+    }
+}
+
+impl WebDavSettings {
+    /// 目标文件完整地址：目录末尾斜杠与文件名开头斜杠都不会造成双斜杠。
+    pub fn endpoint(&self) -> String {
+        let base = self.url.trim().trim_end_matches('/');
+        let file = self.file.trim().trim_start_matches('/');
+        if file.is_empty() {
+            base.to_string()
+        } else {
+            format!("{base}/{file}")
+        }
+    }
+
+    /// 目标文件所在目录（WebDAV 的 PROPFIND 要打在目录上）。
+    pub fn dir_endpoint(&self) -> String {
+        self.url.trim().trim_end_matches('/').to_string()
+    }
+
+    /// 读取密码：环境变量优先，配置文件字段兜底。
+    pub fn password(&self) -> Option<String> {
+        std::env::var(&self.password_env)
+            .ok()
+            .filter(|p| !p.is_empty())
+            .or_else(|| self.password.clone().filter(|p| !p.is_empty()))
+    }
+
+    /// 是否配置完整到可以启用（地址与文件名非空）。
+    pub fn is_configured(&self) -> bool {
+        !self.url.trim().is_empty() && !self.file.trim().is_empty()
+    }
+}
+
 /// client 配置。
 #[derive(Debug, Clone, Deserialize)]
 pub struct ClientConfig {
@@ -133,6 +199,12 @@ impl ClientConfig {
 
 fn default_password_env() -> String {
     "XIMED_CLIENT_PASSWORD".to_string()
+}
+fn default_webdav_file() -> String {
+    "clipboard.json".to_string()
+}
+fn default_webdav_password_env() -> String {
+    "XIMED_WEBDAV_PASSWORD".to_string()
 }
 fn default_source() -> String {
     hostname().unwrap_or_else(|| "client".to_string())
