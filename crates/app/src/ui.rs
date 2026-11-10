@@ -1154,9 +1154,11 @@ fn nav_button(label: &str, panel: Panel, active: Panel) -> Element<'_, Message> 
     button(
         row![
             dot(is_active),
+            // 选中态不用改字重：Linux 的 CJK sans 往往没有 Semibold 面，
+            // fontconfig 会替换成 Bold（甚至别的族），看起来像换了字体。
+            // 主色 + 实心圆点 + 浅底已经足够表达选中。
             text(label)
                 .size(14)
-                .font(if is_active { SEMIBOLD } else { Font::DEFAULT })
                 .color(if is_active { ACCENT } else { TEXT_MUTED }),
         ]
         .spacing(8)

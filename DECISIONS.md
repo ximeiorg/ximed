@@ -202,6 +202,10 @@ channels = ["p2p", "webdav"]
   细进度条；侧栏改「分组标题 + 导航项」。
 - 布局语义照 `pages/pair.rs`：配对方向用分段控件分开，一次只显示一个主按钮；码用
   34px 主色 + 倒计时进度条；另一方向还在跑时给出跨 tab 提示。
+- **选中态不切字重**：侧栏导航 active 原先切 `Weight::Semibold`，但 Linux 的
+  Noto Sans CJK 没有 Semibold 面，fontconfig 会替换成 Bold（`fc-match` 实测），
+  同一列表的选中/未选中看起来像两种字体。选中只用主色 + 实心圆点 + 浅底，
+  字重保持与未选中一致。
 
 ## 20. LICENSE：p2p 并入默认桌面产物后必须转 GPL（待决，2026-11-10）
 

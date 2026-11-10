@@ -13,6 +13,9 @@
   `assets/icon.png`（macOS 22px、其余 32px），退出前 `shutdown()` 主动 drop。
   已验证：KWin 关窗 → 窗口销毁且进程存活；托盘显示 → 新窗口；托盘隐藏 → 销毁；
   托盘退出 → 进程结束（SNI 项同步消失）。
+- **选中态字体统一（本次）**：侧栏导航选中项不再切 `Weight::Semibold`——Linux 的
+  Noto Sans CJK 没有 Semibold 面，fontconfig 会替换成 Bold（`fc-match` 实测），
+  同一列表的选中/未选中看起来像换了字体。选中改用主色 + 实心圆点 + 浅底表达。
 - **HTTP 从界面移除（上次，决策 21）**：同步页只列局域网直连 / WebDAV；设置页删掉
   「高级 · HTTP 通道」整组；概览删掉服务器启停卡；`Message::{HttpMode,HttpField}`、
   `Channel::Http` 的渲染分支、手动启停 `UiCmd::{ServerStart,ServerRestart,ServerStop}`
