@@ -79,3 +79,31 @@ hub（手机 Xime IME 走 HTTP 事件驱动连它）与官方远端协议端点�
   装 clipboard_sync 插件；`required` 语义等 schema 契约同决策 12（更新：schema 已上移为
   Lua `getSettingsSchema` 运行时契约，见上游 00ba2b5）
 
+## 14. 同步依赖迁到 libximep2p；xime-plugin 暂钉 mlua 时代 rev（2026-11-10）
+
+**背景**：本仓上次提交（64063e0，09-16）之后，上游把 `xime-sync-domain` 从 libximecore
+迁到独立仓 libximep2p（GPL-3.0-or-later），ximed 仍从 libximecore git 取该 crate，
+`.cargo/config.toml` 的 patch 指向已不存在的路径——`cargo metadata` 在依赖解析阶段
+直接失败（exit 101），整个仓库不可构建。
+
+决策点：
+
+- **domain 的来源改到 libximep2p，并 pin 与 libximecore / XimeYi 相同的 rev**
+  （`b19ecde…`）。两者若指向不同 rev，会解析出两个 `xime-sync-domain`，`Profile`
+  成为两个不同类型，跨 crate 传参（后续 `node.set_clipboard(profile)`）直接编译失败。
+  这也是后续接入 `xime-p2p` 的前提。
+- **`.cargo/config.toml` 拆成两段 patch**（libximecore / libximep2p），本地开发分别指向
+  `../libximecore` 与 `../libximep2p`。patch 必须打在 libximep2p 这个源上，否则 git 依赖
+  仍会去拉远端。
+- **xime-plugin pin 在 `bdaff98`**（上游 quickjs 迁移 `8e25e50` 的父提交）：该 rev 已含
+  `get_settings_schema` 契约，运行时仍是 mlua，与 client 现有插件适配层匹配。上游
+  `8e25e50` 起把运行时换成 quickjs-rusty（插件脚本 Lua → JS），直接跟 HEAD 有 49 个
+  编译错误（`PluginRuntime` 不再 `Send + Sync`、`SettingField` 等 API 变更）。迁移 JS
+  契约是独立功能点，本次不做。**该 pin 是临时状态**，迁移完成后放开。
+- **client 的 `config` 下限抬到 0.15.27**：`xime-sync-server` 的 workspace 声明是
+  `^0.15.27`，两侧下限不一致时同一依赖图无法统一到同一版本（`cargo update` 单包
+  更新会来回互相卡死）。
+- **许可证待决**：`xime-sync-domain` 现为 GPL-3.0-or-later（原来在 libximecore 里是
+  MIT），libximep2p 的 `xime-p2p` 同为 GPL。ximed 目前是 MIT——接入 p2p 后整体分发
+  必须转 GPL-3.0-or-later（与 XimeYi / Android 一致），尚未改动 LICENSE。
+

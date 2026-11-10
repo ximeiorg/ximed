@@ -16,7 +16,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 http = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
-config = "0.15"
+# 与 libximecore xime-sync-server 的 config 下限对齐（其 workspace 声明 ^0.15.27），
+# 否则同一依赖图里两个下限无法统一到同一版本。
+config = "0.15.27"
 base64 = "0.22"
 thiserror = "2"
 # Wayland 会话下经 wlr-data-control 直连真实剪贴板；否则回退 X11/XWayland 通道，

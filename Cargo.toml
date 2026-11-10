@@ -8,13 +8,21 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
-# libximecore — shared crates (git dep, patched to local for development, 同 XimeChe 模式)
-# 本地开发用 .cargo/config.toml（gitignored）patch 回 ../libximecore 路径
-xime-sync-domain = { git = "https://github.com/ximeiorg/libximecore.git", package = "xime-sync-domain" }
+# libximecore / libximep2p — shared crates (git dep, patched to local for development, 同 XimeChe 模式)
+# 本地开发用 .cargo/config.toml（gitignored）patch 回 ../libximecore / ../libximep2p 路径
+#
+# xime-sync-domain 已从 libximecore 迁到 libximep2p（见 libximecore ea8e300），
+# 必须与 libximecore 内部使用的 rev 完全一致：两边若指向不同 rev，会解析出两个
+# xime-sync-domain，`Profile` 成为两个不同类型，跨 crate 传参会编译失败。
+xime-sync-domain = { git = "https://github.com/ximeiorg/libximep2p.git", rev = "b19ecdec2c0336669897cafe909541906024dc29" }
 xime-sync-store = { git = "https://github.com/ximeiorg/libximecore.git", package = "xime-sync-store" }
 xime-sync-service = { git = "https://github.com/ximeiorg/libximecore.git", package = "xime-sync-service" }
 xime-sync-server = { git = "https://github.com/ximeiorg/libximecore.git", package = "xime-sync-server" }
-xime-plugin = { git = "https://github.com/ximeiorg/libximecore.git", package = "xime-plugin" }
+# xime-plugin 钉在 mlua 时代最后一个 rev（bdaff98，即上游 quickjs 迁移 8e25e50 的父提交）：
+# 该 rev 已含 get_settings_schema 契约，但运行时仍是 mlua；上游 8e25e50 把运行时换成
+# quickjs-rusty（Lua → JS 契约），client 的插件适配层还没迁移，跟 HEAD 会 49 个编译错误。
+# 迁移 JS 契约是独立功能点，不在本次改动范围内。
+xime-plugin = { git = "https://github.com/ximeiorg/libximecore.git", rev = "bdaff989998cabb8f555943b8954538922dc2caf", package = "xime-plugin" }
 client = { path = "crates/client" }
 app = { path = "crates/app" }
 
