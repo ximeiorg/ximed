@@ -308,3 +308,15 @@ GNOME 无 AppIndicator 扩展时托盘不可见，需探测 StatusNotifierWatche
 - **许可证与决策 20 一致**：显示 GPL-3.0-or-later（`APP_LICENSE` 取自
   `CARGO_PKG_LICENSE`），不再出现 MIT/GPL 并存的提示；`app_license_is_gpl`
   测试防止许可证回退。
+
+
+## 24. HTTP 通道与独立 server 形态暂不对外支持（2026-11-10）
+
+当前对外支持范围收敛为桌面形态的两种原生通道：局域网直连（P2P）与 WebDAV。
+内置 HTTP 通道已从界面隐藏、不提供配置；`ximed-server` 独立部署形态暂不支持。
+README、关于页和路线图按这个口径描述，不再把 HTTP 回退或 server 部署写成现有能力。
+
+代码层面决策 21 的后台 HTTP 回退、本地 server 自动拉起与 `ximed-server` 二进制仍保留，
+用于旧配置兜底与后续恢复；它们不再作为对外承诺。若产品决定彻底禁用，需要改默认
+`channels`、停止 server 自动拉起，并去掉概览里的「内置回退」行——那是独立的行为改动，
+不在本次文档修正范围内。恢复时删除本决策并同步 README / 关于页。

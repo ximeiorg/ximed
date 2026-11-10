@@ -13,8 +13,10 @@
   `assets/icon.png`（macOS 22px、其余 32px），退出前 `shutdown()` 主动 drop。
   已验证：KWin 关窗 → 窗口销毁且进程存活；托盘显示 → 新窗口；托盘隐藏 → 销毁；
   托盘退出 → 进程结束（SNI 项同步消失）。
-- **README + 截图（本次）**：新增 README（功能介绍、三种形态、构建/配置、架构、路线图、
+- **README + 截图（本次）**：新增 README（功能介绍、形态、构建/配置、架构、路线图、
   GPL 许可），并嵌入 `docs/images/overview.png` 与 `docs/images/about.png` 两张界面截图。
+  按当前产品口径明确：只支持桌面形态的 P2P / WebDAV；内置 HTTP 通道与独立 server
+  形态已隐藏、暂不支持。
 - **许可证转 GPL-3.0-or-later（本次，决策 20 已执行）**：`LICENSE` 换成 GPLv3 全文
   （顶部加 ximed / copyright / or-later 声明）；workspace `license` 改为
   `GPL-3.0-or-later`，app/client 继承；cargo-packager 的 `license-file` 仍指向 LICENSE。
@@ -64,16 +66,18 @@
 ## 下一步
 
 1. **GUI 手工验证两条通道**：WebDAV（地址/账号 → 测试连接 → 双端同步）、局域网直连
-   （两台设备同一网络 → 生成码/输入码 → 复制文本自动同步）；顺带确认「未选择同步方式」
-   时概览显示内置回退、选中并保存后回退自动让位
+   （两台设备同一网络 → 生成码/输入码 → 复制文本自动同步）；确认「未选择同步方式」
+   时的提示文案。HTTP 回退/server 暂不作为对外能力（决策 24）
 2. **配对端口的长期方案**：当前靠「配对前暂停节点」绕开端口冲突，代价是配对期间同步
    中断。上游给 `Watcher::bind` 加 `SO_REUSEADDR`（或配对改用临时端口 + 公告真实端口）
    后可去掉暂停逻辑
-3. **托盘/常驻的边角**：macOS Dock 图标在无窗口时点击不会恢复窗口（winit 没有
+3. **恢复 HTTP / server 能力**：内置 HTTP 通道与 `ximed-server` 形态当前只保留代码，
+   后续产品确认后恢复配置入口与部署文档
+4. **托盘/常驻的边角**：macOS Dock 图标在无窗口时点击不会恢复窗口（winit 没有
    reopen 事件，当前只能从菜单栏托盘恢复）；GNOME 无 AppIndicator 扩展时托盘不可见，
    需要探测 StatusNotifierWatcher 并回退成「关窗即退出」；开机自启（三平台）尚未做
-4. 文件同步（跨平台剪贴板文件路径读写，工程量最大）
-5. macOS .app 打包（LSUIElement + 图标）
+5. 文件同步（跨平台剪贴板文件路径读写，工程量最大）
+6. macOS .app 打包（LSUIElement + 图标）
 
 ## 已完成
 
