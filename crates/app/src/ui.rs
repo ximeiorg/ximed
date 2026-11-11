@@ -380,6 +380,10 @@ pub fn run_ui(
     )
     .title("ximed")
     .subscription(move |_state| {
+        // Linux 分支会 push 托盘泵；其余平台不会，`mut` 在这些平台上多余，
+        // 但保留它才能让同一个 vec 跨平台成立（CI 在 Linux 上跑，本地
+        // macOS/Windows 跑同一命令时不应该因此报错）。
+        #[allow(unused_mut)]
         let mut subscriptions = vec![
             backend_events(rx.clone()),
             window_events(),
