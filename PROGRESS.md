@@ -1,9 +1,15 @@
 # PROGRESS
 
-> 更新：2026-11-10 · 阶段：桌面重构 R2/R3 完成；三平台托盘常驻；许可证转 GPL-3.0-or-later；HTTP 通道从界面彻底移除
+> 更新：2026-11-11 · 阶段：桌面重构完成；托盘常驻；许可证转 GPL-3.0-or-later；Windows 黑窗修复
 
 ## 当前状态
 
+- **Windows 黑窗修复（本次，决策 27）**：三个 bin 都没声明 `windows_subsystem`，Rust 默认
+  按 console 子系统链接，双击 exe 会先建一个控制台窗口并挂到进程退出——与 server 无关
+  （desktop 里 server 是同进程 `tokio::spawn`，不建进程也不建控制台）。desktop 无条件
+  GUI 子系统；client 按 `tray` feature 区分（daemon 保留控制台）；server 不动。GUI 形态
+  没有 stdout，新增 `app::logging` 把日志落到 `<配置目录>/logs/<bin>.log`（5 MiB 滚动），
+  其他平台行为不变
 - **托盘常驻（本次，决策 22）**：窗口改由 `iced::daemon` 承载——关窗不再退出进程，托盘菜单
   「显示主窗口 / 隐藏到托盘 / 退出 ximed」。Windows/macOS/X11 关窗走 `Mode::Hidden`
   保留窗口；Wayland 的 `set_visible` 是 no-op，改为销毁窗口、托盘恢复时按原设置重建。
@@ -22,7 +28,8 @@
   跟踪；CI checkout 后它仍存在，patch 指向不存在的 `../libximecore`，导致 clippy/test 在
   解析依赖阶段直接失败。已 `git rm --cached`，`Cargo.lock` 的 5 个上游 crate 恢复 git
   source（libximecore `04d6ca9`、libximep2p `b19ecde`）。本地 patch 只作临时 override，
-  跑完 `git restore Cargo.lock`。
+  跑完 `git restore Cargo.lock`。本次再把三个同步服务 crate 钉 rev `b4714f6`（决策 28），
+  避免「本地看邻居仓库 HEAD、CI 看远端分支最新」两边漂移。
 - **自动构建调整（本次）**：`build-packages.yml` 只保留三平台桌面包（Windows x64 /
   Linux x64 / macOS arm64+x64），删除 server 与 Linux ARM/musl 目标；Linux 产物改为
   deb + AppImage + rpm，rpm 用 `cargo-generate-rpm` 生成（配置在
@@ -79,19 +86,21 @@
 
 ## 下一步
 
-1. **GUI 手工验证两条通道**：WebDAV（地址/账号 → 测试连接 → 双端同步）、局域网直连
+1. **Windows 实机验证**：装 NSIS 包双击确认不再弹控制台窗口；日志应出现在配置目录的
+   `logs/ximed-desktop.log`（空文件说明当前级别下没有 info 级事件，属正常）
+2. **GUI 手工验证两条通道**：WebDAV（地址/账号 → 测试连接 → 双端同步）、局域网直连
    （两台设备同一网络 → 生成码/输入码 → 复制文本自动同步）；确认「未选择同步方式」
    时的提示文案。HTTP 回退/server 暂不作为对外能力（决策 24）
-2. **配对端口的长期方案**：当前靠「配对前暂停节点」绕开端口冲突，代价是配对期间同步
+3. **配对端口的长期方案**：当前靠「配对前暂停节点」绕开端口冲突，代价是配对期间同步
    中断。上游给 `Watcher::bind` 加 `SO_REUSEADDR`（或配对改用临时端口 + 公告真实端口）
    后可去掉暂停逻辑
-3. **恢复 HTTP / server 能力**：内置 HTTP 通道与 `ximed-server` 形态当前只保留代码，
+4. **恢复 HTTP / server 能力**：内置 HTTP 通道与 `ximed-server` 形态当前只保留代码，
    后续产品确认后恢复配置入口与部署文档
-4. **托盘/常驻的边角**：macOS Dock 图标在无窗口时点击不会恢复窗口（winit 没有
+5. **托盘/常驻的边角**：macOS Dock 图标在无窗口时点击不会恢复窗口（winit 没有
    reopen 事件，当前只能从菜单栏托盘恢复）；GNOME 无 AppIndicator 扩展时托盘不可见，
    需要探测 StatusNotifierWatcher 并回退成「关窗即退出」；开机自启（三平台）尚未做
-5. 文件同步（跨平台剪贴板文件路径读写，工程量最大）
-6. macOS .app 打包（LSUIElement + 图标）
+6. 文件同步（跨平台剪贴板文件路径读写，工程量最大）
+7. macOS .app 打包（LSUIElement + 图标）
 
 ## 已完成
 

@@ -369,3 +369,47 @@ does not contain packages matching `xime-sync-server`
   patch 时不要加 `--locked`（会报 lock 需要更新）。
 - 已在无 patch 环境下原样跑通 CI 的 clippy（默认 + 无默认特性）与
   `cargo test --workspace --all-targets --locked`。
+
+## 27. Windows GUI 入口必须声明 windows_subsystem（2026-11-11）
+
+用户反馈 Windows 启动时弹一个 cmd 黑窗。**与 server 无关**：desktop 形态里 server 是
+同进程 `tokio::spawn`，不创建子进程也不创建控制台。真正原因是 Rust 二进制默认按
+**console 子系统**链接，双击时系统先为它建一个控制台窗口，并挂到进程退出。
+
+- `ximed-desktop`：`#![cfg_attr(windows, windows_subsystem = "windows")]`。
+  `required-features = ["tray"]` 已保证它是 GUI 形态，无需再判断。
+- `ximed-client`：`#![cfg_attr(all(windows, feature = "tray"), windows_subsystem = "windows")]`。
+  带 tray 是 GUI 不该弹窗；`--no-default-features` 的 daemon 形态必须保留控制台，
+  否则日志与 `--help` 全都没了。
+- `ximed-server`：保持 console，服务端输出就是它的观测面。
+- 资源脚本 `app.rc` 只嵌图标，没有 `/SUBSYSTEM` 声明，所以属性在 crate 根部即可生效。
+
+**连带问题**：GUI 子系统下进程没有 stdout，`tracing_subscriber` 的默认 writer 会把日志
+写进 void，等于修好黑窗却彻底失去排障能力。因此新增 `app::logging`：
+
+- 写 `<配置目录>/logs/<bin>.log`，`with_ansi(false)`；
+- 启动时若超过 5 MiB 滚动成 `.1`，只留一份历史，够定位最近一次运行；
+- 只有 Windows 调用它，但模块本身三平台编译——本地没有 Windows 工具链时也能验证类型，
+  CI 也会持续覆盖；
+- macOS / Linux 仍走 stdout，`cargo run` 开发体验不变。
+
+## 28. 依赖源补充：libximecore 钉 rev，不跟随默认分支（2026-11-11）
+
+决策 26 已定下「CI 用 git 依赖、本地 patch 不入库」，`Cargo.lock` 记录的是不钉 rev 时
+解析到的 `04d6ca9`。本次在该基础上把三个同步服务 crate 钉到显式 rev：
+
+```toml
+xime-sync-store   = { git = ".../libximecore.git", rev = "b4714f6", package = "xime-sync-store" }
+xime-sync-service = { ... 同上 }
+xime-sync-server  = { ... 同上 }
+```
+
+- **为什么钉**：不钉 rev 时，本地 patch 解析到的是邻居仓库 HEAD、CI 解析到远端默认分支
+  最新——同一份 lock 在两边可能指向不同代码，本地全绿不代表 CI 能过。
+- **选哪个 rev**：`b4714f6` 的 `Cargo.toml` 内部引用 libximep2p `b19ecde`，与本仓
+  domain / p2p 的 pin 同代，不会解析出两个 `Profile` 类型。
+- **lock 必须同步重生成**：改 rev 后旧 lock 的 source 不匹配，`--locked` 会报需要更新；
+  在无 patch 状态跑一次 `cargo metadata` 即可。
+- **本地 patch 的代价照旧**：带 patch 跑 cargo 会把 lock 的 source 抹成 path，
+  提交前 `git restore Cargo.lock`。
+
