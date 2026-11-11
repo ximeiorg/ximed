@@ -15,6 +15,12 @@
 
 #[cfg(feature = "tray")]
 pub mod desktop;
+/// GUI 形态的日志落盘（Windows GUI 子系统无控制台，stdout 会被丢弃）。
+///
+/// 模块本身跨平台编译：只有 Windows 会调用它，但让三平台都编译能保证这段
+/// 代码不被 CI 漏测（本地跑不了 Windows 目标时尤其重要）。
+#[cfg(feature = "tray")]
+pub mod logging;
 #[cfg(all(feature = "tray", target_os = "macos"))]
 pub mod macos;
 #[cfg(feature = "tray")]
@@ -32,6 +38,24 @@ use client::clipboard::SystemClipboard;
 use client::config::ClientConfig;
 use client::settings::SyncSettings;
 use client::sync::SyncEngine;
+
+/// GUI 形态的日志初始化。
+///
+/// Windows 下两个 GUI 入口以 `windows_subsystem = "windows"` 链接，进程没有控制台，
+/// `tracing_subscriber` 默认的 stdout writer 等于丢弃——排障时会完全失明，所以写文件；
+/// 其他平台保留 stdout（`cargo run` 开发时直接可见），不改变现有观感。
+#[cfg(feature = "tray")]
+fn init_gui_logging(level: &str, dir: &std::path::Path, stem: &str) {
+    #[cfg(windows)]
+    {
+        logging::init_file(level, &dir.to_string_lossy(), stem);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (dir, stem);
+        xime_sync_server::init_tracing(level);
+    }
+}
 
 /// Form 1：仅服务器。行为与原 `ximed server` 子命令一致。
 pub fn run_server() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -61,7 +85,16 @@ pub fn run_client() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             std::process::exit(1);
         }
     };
+    // daemon 形态（无 tray）要能被重定向/查看日志，保留 stdout；
+    // GUI 形态在 Windows 没有控制台，改为落盘。
+    #[cfg(not(feature = "tray"))]
     xime_sync_server::init_tracing("info");
+    #[cfg(feature = "tray")]
+    init_gui_logging(
+        "info",
+        &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        "ximed-client",
+    );
     // client-only 形态无设置面板：同步默认开启（与 SyncSettings 默认一致）
     let sync = SyncSettings::default();
 

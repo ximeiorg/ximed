@@ -62,8 +62,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         &config_dir,
     );
 
-    // 日志级别取 server 配置
-    xime_sync_server::init_tracing(&settings.server().log_level);
+    // 日志级别取 server 配置。Windows GUI 形态没有控制台，日志落盘到
+    // `<配置目录>/logs/ximed-desktop.log`（见 crate::init_gui_logging）。
+    crate::init_gui_logging(
+        &settings.server().log_level,
+        std::path::Path::new(&config_dir),
+        "ximed-desktop",
+    );
 
     // UI 后台事件通道：后台线程发 → iced Subscription 注入；托盘在 UI 事件循环启动后创建
     let (tx, rx) = ui_channel();
