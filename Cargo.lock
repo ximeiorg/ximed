@@ -7045,7 +7045,7 @@ dependencies = [
 [[package]]
 name = "xime-sync-server"
 version = "0.1.0"
-source = "git+https://github.com/ximeiorg/libximecore.git#04d6ca9ee558f5f2b57df5f00ffb7aa77607ecee"
+source = "git+https://github.com/ximeiorg/libximecore.git?rev=b4714f61ee17f9f8139acfc6ee0df34eca89ab00#b4714f61ee17f9f8139acfc6ee0df34eca89ab00"
 dependencies = [
  "axum",
  "axum-server",
@@ -7068,7 +7068,7 @@ dependencies = [
 [[package]]
 name = "xime-sync-service"
 version = "0.1.0"
-source = "git+https://github.com/ximeiorg/libximecore.git#04d6ca9ee558f5f2b57df5f00ffb7aa77607ecee"
+source = "git+https://github.com/ximeiorg/libximecore.git?rev=b4714f61ee17f9f8139acfc6ee0df34eca89ab00#b4714f61ee17f9f8139acfc6ee0df34eca89ab00"
 dependencies = [
  "serde_json",
  "tokio",
@@ -7080,7 +7080,7 @@ dependencies = [
 [[package]]
 name = "xime-sync-store"
 version = "0.1.0"
-source = "git+https://github.com/ximeiorg/libximecore.git#04d6ca9ee558f5f2b57df5f00ffb7aa77607ecee"
+source = "git+https://github.com/ximeiorg/libximecore.git?rev=b4714f61ee17f9f8139acfc6ee0df34eca89ab00#b4714f61ee17f9f8139acfc6ee0df34eca89ab00"
 dependencies = [
  "async-trait",
  "rusqlite",

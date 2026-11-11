@@ -16,9 +16,12 @@ license = "GPL-3.0-or-later"
 # 必须与 libximecore 内部使用的 rev 完全一致：两边若指向不同 rev，会解析出两个
 # xime-sync-domain，`Profile` 成为两个不同类型，跨 crate 传参会编译失败。
 xime-sync-domain = { git = "https://github.com/ximeiorg/libximep2p.git", rev = "b19ecdec2c0336669897cafe909541906024dc29" }
-xime-sync-store = { git = "https://github.com/ximeiorg/libximecore.git", package = "xime-sync-store" }
-xime-sync-service = { git = "https://github.com/ximeiorg/libximecore.git", package = "xime-sync-service" }
-xime-sync-server = { git = "https://github.com/ximeiorg/libximecore.git", package = "xime-sync-server" }
+# 三个同步服务 crate 钉在同一 rev 的 libximecore（该 rev 内部引用 libximep2p
+# b19ecde，与下方 domain 一致）。不钉 rev 时，本地 patch 看邻居仓库 HEAD、
+# CI 拉远端默认分支最新——两边可能解析到不同提交。
+xime-sync-store = { git = "https://github.com/ximeiorg/libximecore.git", rev = "b4714f61ee17f9f8139acfc6ee0df34eca89ab00", package = "xime-sync-store" }
+xime-sync-service = { git = "https://github.com/ximeiorg/libximecore.git", rev = "b4714f61ee17f9f8139acfc6ee0df34eca89ab00", package = "xime-sync-service" }
+xime-sync-server = { git = "https://github.com/ximeiorg/libximecore.git", rev = "b4714f61ee17f9f8139acfc6ee0df34eca89ab00", package = "xime-sync-server" }
 # 跨设备剪贴板 P2P（局域网直连，无第三方服务器）。与 domain 同仓同 rev：
 # 它 re-export 的 `Profile` 必须和本仓用的是同一个类型（见上方 domain 注释）。
 xime-p2p = { git = "https://github.com/ximeiorg/libximep2p.git", rev = "b19ecdec2c0336669897cafe909541906024dc29" }

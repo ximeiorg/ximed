@@ -21,6 +21,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      # .cargo/config.toml 是本地开发用的 patch（指向 ../libximecore / ../libximep2p），
+      # 已在 .gitignore 里；但历史上被跟踪过，一旦再次提交，CI 上这些兄弟目录不存在，
+      # 报错是「patch location does not contain packages」，与真实原因差得很远。
+      - name: Guard against committed local cargo patch
+        run: |
+          if [ -f .cargo/config.toml ]; then
+            echo "::error::.cargo/config.toml must not be committed: it patches ../libximecore and ../libximep2p, which do not exist on CI. Run 'git rm --cached .cargo/config.toml'."
+            exit 1
+          fi
       - uses: dtolnay/rust-toolchain@stable
       - name: Format check
         run: cargo fmt --all --check
