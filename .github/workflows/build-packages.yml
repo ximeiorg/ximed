@@ -10,7 +10,7 @@
 # 生成，配置见同文件的 [package.metadata.generate-rpm]。
 #
 # 由调用方触发：
-#   - ci.yml       每次 push / PR（publish=none, upload=false：只验证打包链路，不传产物）
+#   - ci.yml       每次 push / PR（publish=none：上传 Actions artifacts 供下载，不发 Release）
 #   - nightly.yml  每日 02:00 UTC / 手动（publish=nightly：产物更新到滚动 nightly release）
 #   - release.yml  推送 v* tag（publish=tag：发布到当前 tag 的 GitHub Release）
 name: build-packages
@@ -19,7 +19,7 @@ on:
   workflow_call:
     inputs:
       publish:
-        description: "发布方式：none=不发布 Release；tag=发布到当前 tag 的 GitHub Release；nightly=更新滚动 nightly release（Actions artifacts 由 upload 控制）"
+        description: "发布方式：none=不发布 Release；tag=发布到当前 tag 的 GitHub Release；nightly=更新滚动 nightly release（产物始终上传为 Actions artifacts）"
         required: false
         type: string
         default: "none"
@@ -28,11 +28,6 @@ on:
         required: false
         type: boolean
         default: false
-      upload:
-        description: "是否上传 Actions artifacts；false 时只构建并校验产物（日常 CI 用）"
-        required: false
-        type: boolean
-        default: true
 
 permissions:
   contents: write
@@ -143,8 +138,8 @@ jobs:
           # 清理 cargo-packager 工具集缓存（默认落在 out-dir）
           rm -rf dist/.cargo-packager
 
-      # 产物存在性校验：upload=true 时由 upload-artifact 的 if-no-files-found 兜底，
-      # upload=false 的日常 CI 需要单独确认打包真的产出了文件。
+      # 产物存在性校验：upload-artifact 的 if-no-files-found 也会兜底，
+      # 这里先打一行清单，方便在 CI 日志里直接看到产出了哪些包。
       - name: Verify package outputs
         shell: bash
         run: |
@@ -157,7 +152,6 @@ jobs:
           ls -lh dist
 
       - name: Upload artifacts
-        if: inputs.upload
         uses: actions/upload-artifact@v6
         with:
           name: ximed-${{ matrix.target }}
