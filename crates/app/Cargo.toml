@@ -69,6 +69,8 @@ getrandom = "0.3"
 base64 = "0.22"
 # 应用设置持久化（ximed-client.toml）
 toml = "0.9"
+# 平台用户目录（Application Support / XDG_DATA_HOME / LOCALAPPDATA）
+dirs = "6"
 # 桌面 UI（feature tray）：wgpu（GPU，Metal/Vulkan）优先，tiny-skia（CPU）自动兜底。
 # 低性能设备（树莓派等）无 GPU 时自动回退软渲染，无需额外配置。
 iced = { version = "0.14", optional = true, default-features = false, features = ["tokio", "wgpu", "tiny-skia", "x11", "wayland", "image"] }

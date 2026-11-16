@@ -24,6 +24,8 @@ pub mod logging;
 #[cfg(all(feature = "tray", target_os = "macos"))]
 pub mod macos;
 #[cfg(feature = "tray")]
+pub mod paths;
+#[cfg(feature = "tray")]
 pub mod settings;
 #[cfg(feature = "tray")]
 pub mod tray;

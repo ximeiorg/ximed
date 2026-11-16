@@ -45,8 +45,24 @@ fn lan_endpoint(addr: &str, lan: &str) -> String {
 /// 启动 desktop 形态：阻塞直到进程结束。
 pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut settings = xime_sync_server::config::Settings::new()?;
+    // macOS Finder 启动时 cwd 是 `/`（不可写）：相对 data_dir（默认 `./data`）必须
+    // 锚定到用户目录，否则会尝试创建 `/data`（见 paths 模块与 issue #1）。
+    let base = crate::paths::base_dir();
+    let data_dir = crate::paths::resolve_data_dir(&settings.server().data_dir, &base);
+    settings.server.data_dir = data_dir.to_string_lossy().into_owned();
+
     let mut client_cfg = ClientConfig::load()?;
     let config_dir = config_dir(&settings);
+
+    // 日志级别取 server 配置。Windows GUI 形态没有控制台，日志落盘到
+    // `<配置目录>/logs/ximed-desktop.log`（见 crate::init_gui_logging）。
+    // 必须在生成认证密码之前初始化：data_dir 不可写时要能留下错误日志而不是 abort。
+    crate::init_gui_logging(
+        &settings.server().log_level,
+        std::path::Path::new(&config_dir),
+        "ximed-desktop",
+    );
+
     let app_settings = AppSettings::load(&config_dir);
 
     // 认证密码：server 未配置时自动生成随机密码，落盘并注入两端。
@@ -60,14 +76,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         &settings,
         &server_pw,
         &config_dir,
-    );
-
-    // 日志级别取 server 配置。Windows GUI 形态没有控制台，日志落盘到
-    // `<配置目录>/logs/ximed-desktop.log`（见 crate::init_gui_logging）。
-    crate::init_gui_logging(
-        &settings.server().log_level,
-        std::path::Path::new(&config_dir),
-        "ximed-desktop",
     );
 
     // UI 后台事件通道：后台线程发 → iced Subscription 注入；托盘在 UI 事件循环启动后创建
@@ -111,6 +119,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 
 /// 配置文件所在目录：优先当前工作目录（ximed.toml 所在），不存在则回退 data_dir。
+///
+/// 此时 `data_dir` 已由 [`crate::paths::resolve_data_dir`] 展开成绝对路径，
+/// 所以非便携模式下的配置目录同样不依赖进程 cwd。
 fn config_dir(settings: &xime_sync_server::config::Settings) -> String {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     if cwd.join("ximed.toml").exists() {
@@ -398,6 +409,10 @@ fn stop_client_services(
 
 /// 解析 server 认证密码：已配置则直接返回；否则生成随机密码并落盘
 /// `{data_dir}/auth_password`（0600），注入 settings.auth.password。
+///
+/// 落盘失败（只读磁盘、权限不足）**不 panic**：GUI 进程 panic = abort，
+/// 用户只会看到「ximed quit unexpectedly」（issue #1 的表现）。改为本次运行
+/// 使用内存密码并记一条错误日志，窗口仍能起来。
 fn server_password(settings: &mut xime_sync_server::config::Settings) -> String {
     if let Some(pw) = settings.auth().password() {
         return pw;
@@ -411,15 +426,32 @@ fn server_password(settings: &mut xime_sync_server::config::Settings) -> String 
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
             let pw = random_password();
-            std::fs::create_dir_all(&data_dir).ok();
-            use std::io::Write;
-            let mut f = std::fs::File::create(&pw_file).expect("create auth_password file");
-            set_password_file_perms(&f);
-            let _ = f.write_all(pw.as_bytes());
-            pw
+            match persist_password(&data_dir, &pw_file, &pw) {
+                Ok(()) => pw,
+                Err(e) => {
+                    tracing::error!(
+                        "无法写入认证密码 {}：{e}；本次运行使用临时密码",
+                        pw_file.display()
+                    );
+                    pw
+                }
+            }
         });
     settings.auth.password = Some(generated.clone());
     generated
+}
+
+/// 创建数据目录并写入密码文件（unix 下权限 0600）。
+fn persist_password(
+    dir: &std::path::Path,
+    file: &std::path::Path,
+    pw: &str,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    use std::io::Write;
+    let mut f = std::fs::File::create(file)?;
+    set_password_file_perms(&f);
+    f.write_all(pw.as_bytes())
 }
 
 /// 设置密码文件权限：unix 下为 0600，其它平台为 no-op。
@@ -449,6 +481,41 @@ mod tests {
         let mut s = Settings::default();
         s.server.addr = addr.to_string();
         s
+    }
+
+    #[test]
+    fn persist_password_creates_dir_and_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("nested").join("data");
+        let file = data.join("auth_password");
+        persist_password(&data, &file, "secret").unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "secret");
+    }
+
+    /// issue #1 的回归点：data_dir 不可写时不能 panic（release 下 panic=abort，
+    /// 用户只能看到「ximed quit unexpectedly」），必须退回内存密码继续启动。
+    #[cfg(unix)]
+    #[test]
+    fn unwritable_data_dir_does_not_panic() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _g = xime_sync_server::config::env_lock();
+        unsafe {
+            std::env::remove_var("XIMED_AUTH_PASSWORD");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let readonly = dir.path().join("readonly");
+        std::fs::create_dir(&readonly).unwrap();
+        std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        let mut settings = Settings::default();
+        settings.server.data_dir = readonly.join("data").to_string_lossy().into_owned();
+        let pw = server_password(&mut settings);
+        assert!(!pw.is_empty());
+        assert_eq!(settings.auth.password.as_deref(), Some(pw.as_str()));
+
+        // 恢复权限，便于 tempdir 清理。
+        std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
     #[test]

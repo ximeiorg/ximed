@@ -413,3 +413,25 @@ xime-sync-server  = { ... 同上 }
 - **本地 patch 的代价照旧**：带 patch 跑 cargo 会把 lock 的 source 抹成 path，
   提交前 `git restore Cargo.lock`。
 
+
+## 29. 桌面形态的相对 data_dir 锚定用户目录，不跟随进程 cwd（2026-11-16，issue #1）
+
+macOS 从 Finder 双击 `.app` 时进程 cwd 是 `/`（不可写），而 server 默认
+`data_dir = "./data"`。按 cwd 展开就会去创建 `/data`，随后 `server_password` 里
+`File::create(...).expect(...)` 直接 panic；release 的 `panic = "abort"` 把它变成
+SIGABRT，用户只看到「ximed quit unexpectedly」。同一二进制在可写目录启动则正常。
+
+- **新增 `app::paths`**：`base_dir()` 选择相对路径锚点——当前目录有 `ximed.toml`
+  时为便携模式（开发 / 绿色部署，数据留在旁边），否则用平台用户目录
+  `dirs::data_local_dir()/ximed`（macOS `~/Library/Application Support/ximed`、
+  Linux `~/.local/share/ximed`、Windows `%LOCALAPPDATA%\ximed`）。
+- **`resolve_data_dir`**：相对 data_dir 拼到锚点，绝对路径原样保留；同时去掉冗余
+  `.` 分量。`settings.server.data_dir` 在 desktop `run()` 入口就地改成绝对路径，
+  后续 config_dir / 认证密码 / 历史库 / server 存储 / P2P 全部一致。
+- **不 panic**：密码落盘失败改为 `tracing::error!` + 本次运行用内存密码。GUI 进程
+  panic = abort，任何可预期的 IO 失败都不该走 `expect`。
+- **验证**：`HOME=<tmp> cwd=/ ximed-desktop` 启动后进程存活，数据落在
+  `~/Library/Application Support/ximed/data`（auth_password / history.db /
+  clipboard/current.json 齐备）；单测覆盖相对/绝对/点分量与只读目录不 panic。
+- **代价**：非便携模式首次启动不会再读旧的 `./data`。旧版本只发布过 0.2.1，且
+  macOS 上本来就起不来，不做迁移；便携模式行为不变。

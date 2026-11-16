@@ -4,6 +4,13 @@
 
 ## 当前状态
 
+- **macOS Finder 启动修复（本次，issue #1，决策 29）**：桌面形态的相对 `data_dir`
+  不再按进程 cwd 展开。macOS 从 Finder 双击时 cwd 是 `/`，此前会尝试创建 `/data`
+  并在写认证密码时 abort（SIGABRT）；现在锚定平台用户目录
+  `~/Library/Application Support/ximed/data`（Linux `~/.local/share/ximed/data`、
+  Windows `%LOCALAPPDATA%\ximed\data`），当前目录有 `ximed.toml` 时仍为便携模式。
+  认证密码落盘失败也不再 panic（改用内存密码 + error 日志）。已从 cwd=`/` 实机启动
+  验证：进程存活、数据目录与文件正常创建
 - **Windows 黑窗修复（本次，决策 27）**：三个 bin 都没声明 `windows_subsystem`，Rust 默认
   按 console 子系统链接，双击 exe 会先建一个控制台窗口并挂到进程退出——与 server 无关
   （desktop 里 server 是同进程 `tokio::spawn`，不建进程也不建控制台）。desktop 无条件
@@ -80,7 +87,7 @@
 - **P0 依赖迁移（fdf929a）**：domain 迁 libximep2p（pin `b19ecde`）+ patch 拆段
 
 验证：`cargo check --workspace`（默认 / `--no-default-features`）双绿；
-`cargo test --workspace` 72 项通过（client 54 + app 18）；fmt 干净。
+`cargo test --workspace --lib --bins` 80 项通过（client 54 + app 26）；fmt 干净。
 托盘额外做了 Linux Wayland 实机验证（D-Bus StatusNotifierItem/DBusMenu + KWin 脚本
 关窗，见上）；Windows/macOS 本轮只做代码路径审查，未实机跑。
 

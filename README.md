@@ -52,7 +52,18 @@ Windows 需要 MSVC 工具链（exe 图标由 `embed-resource` 嵌入）；macOS
 
 ## 配置
 
-桌面形态的界面设置保存在配置目录下的 `ximed-client.toml`，同步通道、配对与历史都在界面里完成；默认数据目录是 `./data`，在「设置」页可以看到并打开。
+桌面形态的界面设置保存在配置目录下的 `ximed-client.toml`，同步通道、配对与历史都在界面里完成。
+
+数据目录默认锚定到平台用户目录，不再相对进程工作目录（macOS 从 Finder 启动时 cwd 是 `/`，相对路径会写不进去）：
+
+| 平台 | 默认数据目录 |
+| --- | --- |
+| macOS | `~/Library/Application Support/ximed/data` |
+| Windows | `%LOCALAPPDATA%\ximed\data` |
+| Linux | `~/.local/share/ximed/data` |
+
+在「设置」页可以看到并打开该目录。若当前目录存在 `ximed.toml`（开发或绿色部署），则视为便携模式：配置与 `./data` 都留在当前目录；也可以用 `XIMED__SERVER__DATA_DIR` 指定绝对路径覆盖数据目录。
+
 
 
 ## 项目结构
@@ -81,7 +92,7 @@ cargo check --workspace --no-default-features
 cargo test --workspace
 ```
 
-提交需遵循仓库约定：一个功能点一次提交、commit 必须 GPG 签名。当前测试 72 项（client 54 + app 18）。
+提交需遵循仓库约定：一个功能点一次提交、commit 必须 GPG 签名。当前测试 80 项（client 54 + app 26）。
 
 ## 状态与路线图
 
