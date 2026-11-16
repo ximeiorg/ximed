@@ -46,7 +46,9 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             cache: true
-          - os: ubuntu-latest
+          # 钉 24.04：Linux 包在这里构建，glibc 2.39 兼容面比 26.04 广
+          # （ubuntu-latest 正迁往 26.04，见 actions/runner-images#14748）。
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             apt: true
             cache: true
@@ -171,7 +173,7 @@ jobs:
     name: Publish rolling nightly release
     needs: build
     if: inputs.publish == 'nightly'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v6

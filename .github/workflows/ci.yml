@@ -16,10 +16,15 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# 显式钉 ubuntu-24.04，不用 ubuntu-latest：GitHub 正在把 ubuntu-latest 从
+# 24.04 迁到 26.04（actions/runner-images#14748，2026-11-19 完成）。Linux 发布包
+# 在 Ubuntu 24.04 上构建，最低 glibc 2.39，兼容 Debian 12 / Ubuntu 24.04 等；
+# 换到 26.04 构建会把最低 glibc 要求抬高，缩小可分发的范围。升级镜像应是一次
+# 显式决策，而不是跟随 latest 漂移。
 jobs:
   fmt:
     name: fmt
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       # .cargo/config.toml 是本地开发用的 patch（指向 ../libximecore / ../libximep2p），
@@ -37,7 +42,7 @@ jobs:
 
   clippy:
     name: clippy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -61,7 +66,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-15]
+        os: [ubuntu-24.04, windows-latest, macos-15]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable

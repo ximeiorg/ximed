@@ -9,7 +9,8 @@
   cargo-packager / cargo-generate-rpm 打包链路（Windows NSIS+zip、Linux
   deb+rpm+AppImage、macOS arm64/x64 dmg）。产物上传为 Actions artifacts
   （在 run 页面即可下载），**不创建/更新任何 GitHub Release**；nightly / tag
-  发布行为不变
+  发布行为不变。runner 显式钉 `ubuntu-24.04`（`ubuntu-latest` 正迁 26.04，
+  会抬高 Linux 包的最低 glibc 要求，见 actions/runner-images#14748）
 - **macOS Finder 启动修复（本次，issue #1，决策 29）**：桌面形态的相对 `data_dir`
   不再按进程 cwd 展开。macOS 从 Finder 双击时 cwd 是 `/`，此前会尝试创建 `/data`
   并在写认证密码时 abort（SIGABRT）；现在锚定平台用户目录
