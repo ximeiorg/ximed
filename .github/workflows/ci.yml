@@ -1,4 +1,5 @@
-# ximed 每次 push / PR 的代码检查：fmt + clippy（默认与无 UI 精简构建）+ 全量测试（三平台）。
+# ximed 每次 push / PR 的代码检查：fmt + clippy（默认与无 UI 精简构建）
+# + 全量测试（三平台）+ 桌面包构建（只构建，不上传产物）。
 name: ci
 
 on:
@@ -78,3 +79,12 @@ jobs:
         run: cargo test --workspace --all-targets --locked
       - name: Check no-default-features (minimal server/client build)
         run: cargo check -p app --no-default-features --locked
+
+  # 日常 CI 也跑一遍打包链路（cargo-packager / cargo-generate-rpm），确认发布配置
+  # 没被改坏。只构建 + 校验产物，不上传 artifact、不发布。
+  package:
+    name: package
+    uses: ./.github/workflows/build-packages.yml
+    with:
+      publish: none
+      upload: false

@@ -4,6 +4,12 @@
 
 ## 当前状态
 
+- **日常 CI 构建桌面包（本次）**：`ci.yml` 新增 `package` job，直接复用
+  `build-packages.yml`（`publish=none`、`upload=false`）——每次 push/PR 在三平台
+  跑通 cargo-packager / cargo-generate-rpm 打包链路（Windows NSIS+zip、Linux
+  deb+rpm+AppImage、macOS arm64/x64 dmg），只构建并校验 `dist/` 有产物，不上传
+  artifact、不发 Release。可复用工作流因此新增 `upload` 布尔输入（默认 true，
+  nightly/release 行为不变）与独立的产物存在性校验步骤
 - **macOS Finder 启动修复（本次，issue #1，决策 29）**：桌面形态的相对 `data_dir`
   不再按进程 cwd 展开。macOS 从 Finder 双击时 cwd 是 `/`，此前会尝试创建 `/data`
   并在写认证密码时 abort（SIGABRT）；现在锚定平台用户目录
