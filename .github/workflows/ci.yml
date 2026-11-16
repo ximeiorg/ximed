@@ -84,6 +84,12 @@ jobs:
   # 没被改坏。只构建 + 校验产物，不上传 artifact、不发布。
   package:
     name: package
+    # build-packages.yml 顶层声明了 contents: write（tag/nightly 发布用）；
+    # 复用工作流的权限只能被调用方收紧，这里不放行会导致 startup_failure
+    # （requesting 'contents: write', but is only allowed 'contents: read'）。
+    # 本 job 实际只构建，publish=none + upload=false，不会使用写权限。
+    permissions:
+      contents: write
     uses: ./.github/workflows/build-packages.yml
     with:
       publish: none
