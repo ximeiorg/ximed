@@ -19,29 +19,54 @@
 //! - 单例在进程存活期间 **不 drop**：`Node::drop` 会 `shutdown_timeout` 阻塞，
 //!   在异步任务里析构同样会 panic。
 //!
-//! 数据目录固定为 `<base>/p2p`（`identity.bin` + `peers.json`），配对入口与常驻
-//! 节点必须指向同一目录——各写各的会得到「设置里配对成功、输入法仍认为未配对」，
-//! 而界面上看不出任何异常。
+//! # 设备表归宿主（协议库 db9dbc8 起）
+//!
+//! 协议库只定义 [`PeerBook`] 接口，「存在哪、什么格式、要不要迁移」全归宿主。
+//! 这里用 `<base>/p2p/peers.json`（[`FilePeerBook`]）——格式与旧版协议库内置
+//! 的存储**完全一致**（`{version, peers[]}`，临时文件 + rename 原子替换），
+//! 老用户升级后已配对设备原样保留，不需要迁移。
+//!
+//! 每次查询都读文件、不缓存：「配对线程写的表」和「常驻节点持有的表」必须是
+//! 同一份，各缓存一份就会变成「设置里配对成功、同步却说没配对」。写入用进程内
+//! 一把全局锁串行化，避免两个写入方各自整份写回、后写的用旧快照抹掉先写的那台。
+//!
+//! # 配对不再与节点抢端口
+//!
+//! 同步走 TCP 47821 + UDP 47822，配对走 TCP 47823 + UDP 47824（上游把两条
+//! 通道拆开，见 `PAIR_PORT` / `PAIR_UDP_PORT`）。所以配对期间**不需要暂停
+//! 节点**——旧版「配对前 shutdown、结束后恢复」的绕过方案已删除，配对时同步
+//! 不再中断。
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use xime_p2p::{Event, Node, NodeConfig, PeerStore, Profile};
+use xime_p2p::{Event, Node, NodeConfig, PairedPeer, PeerBook, PeerState, Profile};
 
 /// 设备层数据目录名（相对宿主数据根）。
 const P2P_DIR: &str = "p2p";
 /// 已配对设备表文件名（协议 §6.2）。
 const PEERS_FILE: &str = "peers.json";
+/// 设备表文件格式版本（与旧版协议库内置存储一致）。
+const STORE_VERSION: u32 = 1;
+
+/// 设备表写锁。
+///
+/// 节点的重连学地址（[`PeerBook::set_last_addr`]）与配对线程写新设备可能同时
+/// 发生；两方各自「读全表 → 改内存 → 整份写回」会互相覆盖，后写的一方用旧快照
+/// 抹掉先写的那台设备。串行化之后每次写都基于最新快照。
+static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 /// 进程级节点槽位。
 static LINK: OnceLock<Mutex<Option<Node>>> = OnceLock::new();
 /// 当前是否有一条已建立的会话。
 ///
-/// 由 [`poll`] / [`wait_event`] 从 `Event::Peer` 维护：`Node` 本身不暴露连接态，
-/// 而「有没有对端」直接决定 UI 该显示「已连接」还是「等待设备」，也决定 push
-/// 是否该报错（引擎据此退避与上报离线）。
+/// 由 [`poll`] / [`wait_event`] 从 `Event::Peer` 维护：`Node` 也提供
+/// [`Node::status`] 快照，但引擎每轮都要问「能不能推」，走一个原子读比重入
+/// 节点锁便宜。它决定 UI 显示「已连接」还是「等待设备」，也决定 push 是否该
+/// 报错（引擎据此退避与上报离线）。
 static CONNECTED: AtomicBool = AtomicBool::new(false);
 
 fn slot() -> &'static Mutex<Option<Node>> {
@@ -52,6 +77,201 @@ fn slot() -> &'static Mutex<Option<Node>> {
 pub fn data_dir(base: impl AsRef<Path>) -> PathBuf {
     base.as_ref().join(P2P_DIR)
 }
+
+// ---------------------------------------------------------------------------
+// 设备表：文件版 PeerBook
+// ---------------------------------------------------------------------------
+
+/// 磁盘格式（与旧版协议库 `PeerStore` 一致，便于老用户平滑升级）。
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoreFile {
+    version: u32,
+    #[serde(default)]
+    peers: Vec<PairedPeer>,
+}
+
+/// 文件版 [`PeerBook`]：读就是读文件，写是「读 → 改 → 原子替换」。
+///
+/// 协议层会对同一个实例从多个任务并发查询/更新，所以所有方法都取 `&self`、
+/// 内部自己加锁；不缓存任何状态，跨实例（节点 / 配对会话 / UI）看到的永远是
+/// 同一份文件内容。
+pub struct FilePeerBook {
+    path: PathBuf,
+}
+
+impl FilePeerBook {
+    /// 指向指定设备表文件。
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    /// 指向设备层数据目录下的标准设备表。
+    pub fn at(dir: impl AsRef<Path>) -> Self {
+        Self::new(dir.as_ref().join(PEERS_FILE))
+    }
+
+    /// 读全表。
+    ///
+    /// 文件不存在视为空表；文件存在但内容非法则返回错误，**不回落成空表**：
+    /// 表里是用户已建立的信任关系，静默清空等于把所有设备退回未配对状态，
+    /// 而界面上只会显示「暂无已配对设备」。
+    pub fn all_peers(&self) -> Result<Vec<PairedPeer>, String> {
+        let raw = match std::fs::read_to_string(&self.path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(format!("{}: {e}", self.path.display())),
+        };
+        let file: StoreFile = serde_json::from_str(&raw).map_err(|e| {
+            format!(
+                "已配对表解析失败（{}）：{e}。文件未改动，请修复或删除后重新配对",
+                self.path.display()
+            )
+        })?;
+        if file.version > STORE_VERSION {
+            return Err(format!(
+                "已配对表版本 {} 高于本程序支持的 {STORE_VERSION}",
+                file.version
+            ));
+        }
+        Ok(file.peers)
+    }
+
+    /// 原子写入：写临时文件 → 落盘 → rename 覆盖。
+    ///
+    /// 中途断电只会丢失本次更新，不会留下半个文件把整张表读废。
+    fn save(&self, peers: Vec<PairedPeer>) -> Result<(), String> {
+        if let Some(parent) = self.path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+        }
+        let json = serde_json::to_vec_pretty(&StoreFile {
+            version: STORE_VERSION,
+            peers,
+        })
+        .map_err(|e| format!("序列化已配对表失败：{e}"))?;
+        let tmp = self.path.with_extension("json.tmp");
+        {
+            use std::io::Write;
+            let mut f =
+                std::fs::File::create(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                // 表里是设备公钥与地址，不是秘密，但没必要让同机其他用户读到。
+                let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
+            }
+            f.write_all(&json)
+                .map_err(|e| format!("{}: {e}", tmp.display()))?;
+            f.sync_all()
+                .map_err(|e| format!("{}: {e}", tmp.display()))?;
+        }
+        std::fs::rename(&tmp, &self.path).map_err(|e| format!("{}: {e}", self.path.display()))?;
+        Ok(())
+    }
+
+    /// 在写锁内「读 → 改 → 写」，保证并发写不互相覆盖。
+    ///
+    /// 闭包返回 `Err` 时不落盘（例如给未配对的设备写地址），避免把一次失败的
+    /// 操作变成一次无意义的重写。
+    fn mutate_try<T>(
+        &self,
+        f: impl FnOnce(&mut BTreeMap<String, PairedPeer>) -> Result<T, xime_p2p::Error>,
+    ) -> Result<T, xime_p2p::Error> {
+        let _guard = WRITE_LOCK
+            .lock()
+            .map_err(|_| xime_p2p::Error::Store("设备表写锁不可用".into()))?;
+        let mut map: BTreeMap<String, PairedPeer> = self
+            .all_peers()
+            .map_err(xime_p2p::Error::Store)?
+            .into_iter()
+            .map(|peer| (peer.did.clone(), peer))
+            .collect();
+        let out = f(&mut map)?;
+        self.save(map.into_values().collect())
+            .map_err(xime_p2p::Error::Store)?;
+        Ok(out)
+    }
+
+    /// [`Self::mutate_try`] 的不会失败版本。
+    fn mutate<T>(
+        &self,
+        f: impl FnOnce(&mut BTreeMap<String, PairedPeer>) -> T,
+    ) -> Result<T, xime_p2p::Error> {
+        self.mutate_try(|map| Ok(f(map)))
+    }
+}
+
+impl PeerBook for FilePeerBook {
+    fn get(&self, did: &str) -> Option<PairedPeer> {
+        self.all_peers().ok()?.into_iter().find(|p| p.did == did)
+    }
+
+    fn by_x25519(&self, pub_x25519: &[u8; 32]) -> Option<PairedPeer> {
+        let want = hex::encode(pub_x25519);
+        self.all_peers()
+            .ok()?
+            .into_iter()
+            .find(|p| p.pub_x25519 == want)
+    }
+
+    fn all(&self) -> Vec<PairedPeer> {
+        // 接口没有错误通道；读失败时返回空表不会删文件，界面上的提示由
+        // `peers()` 负责（它保留错误，不把损坏的表显示成空表）。
+        self.all_peers().unwrap_or_default()
+    }
+
+    fn upsert(&self, peer: PairedPeer) -> Result<(), xime_p2p::Error> {
+        self.mutate(move |map| {
+            let old = map.get(&peer.did).cloned();
+            let merged = match old {
+                // 重配对（换名字/换公钥）不该把运行时学到的东西清掉。
+                Some(old) => PairedPeer {
+                    did: peer.did.clone(),
+                    name: peer.name,
+                    pub_ed: peer.pub_ed,
+                    pub_x25519: peer.pub_x25519,
+                    last_addr: peer.last_addr.or_else(|| old.last_addr.clone()),
+                    last_seen: peer.last_seen.or(old.last_seen),
+                    paired_at: peer.paired_at,
+                },
+                None => peer,
+            };
+            map.insert(merged.did.clone(), merged);
+        })
+    }
+
+    fn remove(&self, did: &str) -> Result<bool, xime_p2p::Error> {
+        self.mutate(|map| map.remove(did).is_some())
+    }
+
+    fn set_last_addr(&self, did: &str, addr: &str) -> Result<(), xime_p2p::Error> {
+        self.mutate_try(|map| match map.get_mut(did) {
+            Some(peer) => {
+                peer.last_addr = Some(addr.to_string());
+                Ok(())
+            }
+            None => Err(xime_p2p::Error::Store(format!("未找到已配对设备 {did}"))),
+        })
+    }
+
+    fn set_last_seen(&self, did: &str, at: i64) -> Result<(), xime_p2p::Error> {
+        self.mutate_try(|map| match map.get_mut(did) {
+            Some(peer) => {
+                // 只前进不后退：两个任务并发上报时不要把时间戳写回过去。
+                if peer.last_seen.is_none_or(|old| at > old) {
+                    peer.last_seen = Some(at);
+                }
+                Ok(())
+            }
+            None => Err(xime_p2p::Error::Store(format!("未找到已配对设备 {did}"))),
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 节点生命周期
+// ---------------------------------------------------------------------------
 
 /// 确保节点已启动，返回实际监听端口。
 ///
@@ -75,10 +295,12 @@ fn start(base: &Path, port: u16, discover: bool) -> Result<u16, String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("P2P 目录创建失败：{e}"))?;
     let identity = xime_p2p::load_or_create_identity(&dir)
         .ok_or_else(|| "P2P 身份不可用（系统随机源异常）".to_string())?;
+    // 存储归宿主：节点、配对会话、界面各持一个实例，读的都是同一个文件。
+    let peers: Arc<dyn PeerBook> = Arc::new(FilePeerBook::at(&dir));
     let cfg = NodeConfig {
         port,
         discover,
-        ..NodeConfig::new(identity, dir.join(PEERS_FILE))
+        ..NodeConfig::new(identity, peers)
     };
     let node = Node::start(cfg).map_err(|e| format!("P2P 节点启动失败：{e}"))?;
     let actual = node.local_port();
@@ -145,6 +367,40 @@ pub fn shutdown() {
     }
 }
 
+/// 节点状态快照（水平值，不是事件）；节点未启动返回 `None`。
+fn node_status() -> Option<xime_p2p::NodeStatus> {
+    with(|node| node.status())
+}
+
+// ---------------------------------------------------------------------------
+// 已配对设备
+// ---------------------------------------------------------------------------
+
+/// 设备在场状态（界面用）。
+///
+/// 不直接暴露协议类型，免得 app 再去依赖 `xime-p2p`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Presence {
+    /// 有活跃会话，能立刻同步。
+    Online,
+    /// 最近收到过公告，但没有会话（对端在跑，只是没连上本机）。
+    Nearby,
+    /// 既没会话也没公告。
+    Offline,
+    /// 节点未启动，拿不到即时状态。
+    Unknown,
+}
+
+impl Presence {
+    fn of(state: PeerState) -> Self {
+        match state {
+            PeerState::Online => Presence::Online,
+            PeerState::Nearby => Presence::Nearby,
+            PeerState::Offline => Presence::Offline,
+        }
+    }
+}
+
 /// 已配对设备（供 UI 展示与移除）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerInfo {
@@ -154,29 +410,56 @@ pub struct PeerInfo {
     pub name: String,
     /// 最近一次成功连接的地址，尚未连接过为 `None`。
     pub last_addr: Option<String>,
+    /// 最后一次确认在线的时刻（Unix 秒）；从没连上过为 `None`。
+    ///
+    /// 节点刚启动、还没连上任何设备时，界面靠它显示「上次在线 …」而不是
+    /// 一句干巴巴的「离线」。
+    pub last_seen: Option<i64>,
+    /// 即时在场状态（节点没起来时为 [`Presence::Unknown`]）。
+    pub presence: Presence,
 }
 
-/// 读取已配对设备表。
+/// 读取已配对设备表（含即时在场状态）。
 ///
 /// 表损坏（文件存在但内容非法）时返回错误，**不回落为空列表**：表里存的是用户
 /// 已建立的信任关系，静默清空等于把所有设备退回未配对状态，而界面上只会显示
 /// 「暂无已配对设备」。
 pub fn peers(base: impl AsRef<Path>) -> Result<Vec<PeerInfo>, String> {
-    let store = PeerStore::load(data_dir(base).join(PEERS_FILE)).map_err(|e| e.to_string())?;
-    Ok(store
-        .all()
+    let book = FilePeerBook::at(data_dir(base));
+    let mut list: Vec<PeerInfo> = book
+        .all_peers()?
+        .into_iter()
         .map(|peer| PeerInfo {
-            did: peer.did.clone(),
-            name: peer.name.clone(),
-            last_addr: peer.last_addr.clone(),
+            did: peer.did,
+            name: peer.name,
+            last_addr: peer.last_addr,
+            last_seen: peer.last_seen,
+            presence: Presence::Unknown,
         })
-        .collect())
+        .collect();
+    // 即时状态只有活着的节点知道。节点没起来时保持「未知」而不是「离线」——
+    // 那会让人以为对端关机了。
+    if let Some(status) = node_status() {
+        for info in &mut list {
+            if let Some(hit) = status.peers.iter().find(|p| p.did == info.did) {
+                info.presence = Presence::of(hit.state);
+                if hit.last_seen.is_some() {
+                    info.last_seen = hit.last_seen;
+                }
+            }
+        }
+    }
+    Ok(list)
 }
 
 /// 是否至少有一台已配对设备（没有对端就没必要为同步去动网络）。
 pub fn has_peer(base: impl AsRef<Path>) -> bool {
     peers(base).map(|list| !list.is_empty()).unwrap_or(false)
 }
+
+// ---------------------------------------------------------------------------
+// 通道
+// ---------------------------------------------------------------------------
 
 /// 启动设备层并包装成同步通道。
 ///
@@ -328,31 +611,19 @@ impl DisplayPairing {
     }
 }
 
-/// 暂停常驻节点，为配对让出端口。
-///
-/// 配对与常驻节点抢同一组端口（节点 TCP `47821` + 发现 UDP `47822`，配对监听
-/// TCP `47822` + 广播 UDP `47822`），而这对监听都没有 `SO_REUSEADDR`。桌面是单
-/// 进程，不暂停就 100% 绑不上——表现为「点配对没反应」，日志里只有一行 EADDRINUSE。
-fn pause_node() -> bool {
-    let was_running = is_running();
-    if was_running {
-        shutdown();
-    }
-    was_running
-}
-
-/// 配对结束后恢复节点（原本没起就不要凭空启动）。
-fn resume_node(base: &Path, was_running: bool) {
-    if !was_running {
-        return;
-    }
-    if let Err(e) = ensure(base) {
-        tracing::warn!("配对结束后重启 P2P 节点失败：{e}");
-    }
+/// 打开设备层的身份与设备表（配对会话与常驻节点共用同一份）。
+fn pairing_context(base: &Path) -> Result<(Arc<xime_p2p::Identity>, Arc<dyn PeerBook>), String> {
+    let dir = data_dir(base);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("P2P 目录创建失败：{e}"))?;
+    let identity = xime_p2p::load_or_create_identity(&dir)
+        .ok_or_else(|| "P2P 身份不可用（系统随机源异常）".to_string())?;
+    let peers: Arc<dyn PeerBook> = Arc::new(FilePeerBook::at(&dir));
+    Ok((identity, peers))
 }
 
 /// 开始「显示配对码」：立即返回码，等待与结果在后台线程完成。
 ///
+/// 不再暂停常驻节点：配对用自己的 TCP/UDP 端口，与同步发现互不相干。
 /// 回调在后台线程执行，宿主应通过自己的事件通道送回 UI 线程。
 pub fn start_display_pairing(
     base: impl AsRef<Path>,
@@ -360,22 +631,11 @@ pub fn start_display_pairing(
     on_event: impl FnOnce(PairEvent) + Send + 'static,
 ) -> Result<DisplayPairing, String> {
     let root = base.as_ref().to_path_buf();
-    let dir = data_dir(&root);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("P2P 目录创建失败：{e}"))?;
-    let was_running = pause_node();
-    let identity = xime_p2p::load_or_create_identity(&dir)
-        .ok_or_else(|| "P2P 身份不可用（系统随机源异常）".to_string())?;
-    let store_path = dir.join(PEERS_FILE);
-    let session = match xime_p2p::DisplaySession::start(identity, store_path, name) {
-        Ok(s) => s,
-        Err(e) => {
-            resume_node(&root, was_running);
-            return Err(format!("配对端口不可用：{e}"));
-        }
-    };
+    let (identity, peers) = pairing_context(&root)?;
+    let mut session = xime_p2p::DisplaySession::start(identity, peers, name)
+        .map_err(|e| format!("配对端口不可用：{e}"))?;
     let code = session.code_text();
     let stop = session.stop_handle();
-    let mut session = session;
     std::thread::Builder::new()
         .name("xime-p2p-pair".to_string())
         .spawn(move || {
@@ -386,7 +646,6 @@ pub fn start_display_pairing(
                 },
                 Err(e) => PairEvent::Failed(friendly_error(&e)),
             };
-            resume_node(&root, was_running);
             on_event(event);
         })
         .map_err(|e| format!("配对线程创建失败：{e}"))?;
@@ -405,24 +664,17 @@ pub fn start_join_pairing(
     on_event: impl FnOnce(PairEvent) + Send + 'static,
 ) -> Result<(), String> {
     let root = base.as_ref().to_path_buf();
-    let dir = data_dir(&root);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("P2P 目录创建失败：{e}"))?;
-    let was_running = pause_node();
-    let identity = xime_p2p::load_or_create_identity(&dir)
-        .ok_or_else(|| "P2P 身份不可用（系统随机源异常）".to_string())?;
-    let store_path = dir.join(PEERS_FILE);
+    let (identity, peers) = pairing_context(&root)?;
     std::thread::Builder::new()
         .name("xime-p2p-join".to_string())
         .spawn(move || {
-            let event = match xime_p2p::join(identity, store_path, &code, name, xime_p2p::CODE_TTL)
-            {
+            let event = match xime_p2p::join(identity, peers, &code, name, xime_p2p::CODE_TTL) {
                 Ok(peer) => PairEvent::Paired {
                     name: peer.name().to_string(),
                     did: peer.did().to_hex(),
                 },
                 Err(e) => PairEvent::Failed(friendly_error(&e)),
             };
-            resume_node(&root, was_running);
             on_event(event);
         })
         .map_err(|e| format!("配对线程创建失败：{e}"))?;
@@ -431,11 +683,8 @@ pub fn start_join_pairing(
 
 /// 移除一台已配对设备。移除后对端需要重新配对才能连上（信任是双向的）。
 pub fn remove_peer(base: impl AsRef<Path>, did: &str) -> Result<bool, String> {
-    let path = data_dir(base.as_ref()).join(PEERS_FILE);
-    let mut store = PeerStore::load(&path).map_err(|e| e.to_string())?;
-    let removed = store.remove(did).map_err(|e| e.to_string())?;
-    store.save().map_err(|e| e.to_string())?;
-    Ok(removed)
+    let book = FilePeerBook::at(data_dir(base));
+    PeerBook::remove(&book, did).map_err(|e| e.to_string())
 }
 
 /// 节点实际监听端口（未启动返回 `None`）。
@@ -486,6 +735,31 @@ mod tests {
         assert!(set_clipboard(Profile::from_text("hello", None)));
         assert!(!is_connected(), "没有对端时不应报告已连接");
 
+        // 节点在跑时配对必须照样能开始。这是旧实现的痛点：配对与同步共用
+        // 端口，必须先 shutdown 节点。上游把两条通道的端口拆开了，这里先把
+        // 「确实不共用」钉住，再验证节点活着时配对能正常启动。
+        assert_ne!(xime_p2p::PAIR_PORT, xime_p2p::TCP_PORT);
+        assert_ne!(xime_p2p::PAIR_UDP_PORT, xime_p2p::UDP_PORT);
+        // 放在同一片测试里做是因为节点是进程级单例，拆开并发跑会互相顶掉。
+        let pairing = start_display_pairing(base, "测试机".to_string(), |_| {})
+            .expect("节点在跑时配对应能开始");
+        assert!(!pairing.code().is_empty(), "配对码应立即可用");
+        pairing.cancel();
+
+        // 节点在跑时，已配对设备要带即时状态：既没有会话也没有公告 → 离线。
+        // 这条路径是设备页那排状态胶囊的数据来源。
+        let book = FilePeerBook::at(data_dir(base));
+        let other = xime_p2p::Identity::generate().unwrap();
+        book.upsert(PairedPeer::from_public(&other.public("另一台"), None))
+            .unwrap();
+        let list = peers(base).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(
+            list[0].presence,
+            Presence::Offline,
+            "节点在跑时应给出即时状态，而不是「未知」"
+        );
+
         shutdown();
         assert!(!is_running());
         assert!(!is_connected());
@@ -515,22 +789,78 @@ mod tests {
     fn 设备表可读出已配对设备() {
         let dir = tempdir().unwrap();
         let base = dir.path();
-        let p2p = data_dir(base);
-        std::fs::create_dir_all(&p2p).unwrap();
         let peer_identity = xime_p2p::Identity::generate().unwrap();
-        let mut store = PeerStore::load(p2p.join(PEERS_FILE)).unwrap();
-        store
-            .upsert(xime_p2p::PairedPeer::from_public(
-                &peer_identity.public("办公室 Mac"),
-                Some("192.168.1.5:47821".to_string()),
-            ))
-            .unwrap();
-        store.save().unwrap();
+        let book = FilePeerBook::at(data_dir(base));
+        book.upsert(PairedPeer::from_public(
+            &peer_identity.public("办公室 Mac"),
+            Some("192.168.1.5:47821".to_string()),
+        ))
+        .unwrap();
 
         let list = peers(base).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].name, "办公室 Mac");
         assert_eq!(list[0].last_addr.as_deref(), Some("192.168.1.5:47821"));
+        // 节点没起来时状态是「未知」，不是「离线」。
+        assert_eq!(list[0].presence, Presence::Unknown);
         assert!(has_peer(base));
+    }
+
+    /// 重配对（改名）不能把运行时学到的地址与在线时刻清掉。
+    #[test]
+    fn 重新配对保留地址与在线时刻() {
+        let dir = tempdir().unwrap();
+        let book = FilePeerBook::at(data_dir(dir.path()));
+        let identity = xime_p2p::Identity::generate().unwrap();
+        let did = identity.did().to_hex();
+        book.upsert(PairedPeer::from_public(&identity.public("旧名字"), None))
+            .unwrap();
+        book.set_last_addr(&did, "10.0.0.2:47821").unwrap();
+        book.set_last_seen(&did, 100).unwrap();
+
+        book.upsert(PairedPeer::from_public(&identity.public("新名字"), None))
+            .unwrap();
+
+        let got = book.get(&did).expect("设备应仍在表里");
+        assert_eq!(got.name, "新名字");
+        assert_eq!(got.last_addr.as_deref(), Some("10.0.0.2:47821"));
+        assert_eq!(got.last_seen, Some(100));
+    }
+
+    /// 同一进程里两个实例（节点 / 配对线程）写同一张表时互不覆盖。
+    #[test]
+    fn 两个实例写同一张表互不覆盖() {
+        let dir = tempdir().unwrap();
+        let path = data_dir(dir.path()).join(PEERS_FILE);
+        let a = FilePeerBook::new(&path);
+        let b = FilePeerBook::new(&path);
+
+        let id_a = xime_p2p::Identity::generate().unwrap();
+        let id_b = xime_p2p::Identity::generate().unwrap();
+        a.upsert(PairedPeer::from_public(&id_a.public("A"), None))
+            .unwrap();
+        b.upsert(PairedPeer::from_public(&id_b.public("B"), None))
+            .unwrap();
+
+        assert_eq!(a.all().len(), 2, "后写的不能抹掉先写的设备");
+        assert!(a.remove(&id_a.did().to_hex()).unwrap());
+        assert!(
+            b.get(&id_a.did().to_hex()).is_none(),
+            "删除对两个实例都生效"
+        );
+    }
+
+    /// 已配对设备的公钥反查（Noise 握手用）。
+    #[test]
+    fn 按_x25519_反查设备() {
+        let dir = tempdir().unwrap();
+        let book = FilePeerBook::at(data_dir(dir.path()));
+        let identity = xime_p2p::Identity::generate().unwrap();
+        let public = identity.public("Phone");
+        let did = public.did().to_hex();
+        book.upsert(PairedPeer::from_public(&public, None)).unwrap();
+
+        assert_eq!(book.by_x25519(&public.x_public()).map(|p| p.did), Some(did));
+        assert!(book.by_x25519(&[0u8; 32]).is_none());
     }
 }

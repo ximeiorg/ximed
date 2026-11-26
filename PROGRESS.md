@@ -1,9 +1,16 @@
 # PROGRESS
 
-> 更新：2026-11-11 · 阶段：桌面重构完成；托盘常驻；许可证转 GPL-3.0-or-later；Windows 黑窗修复
+> 更新：2026-11-26 · 阶段：同步上游 p2p 升级（设备表归宿主、配对端口独立）；设备页显示在线状态
 
 ## 当前状态
 
+- **同步上游 p2p 升级（本次，决策 30）**：libximep2p 升 `db9dbc8`、libximecore 升
+  `d996bf6`。协议库不再带存储，改为宿主实现 `PeerBook`——本仓新增 `FilePeerBook`
+  （`<配置目录>/p2p/peers.json`，格式与旧版完全一致，老用户免迁移）；不缓存、写锁串行化，
+  节点每 5 秒重读，配对后无需重启即可被发现。配对发现改走独立端口
+  （TCP 47823 / UDP 47824），因此删掉了「配对前暂停节点」的绕过方案，配对期间同步不再
+  中断。设备页每台设备新增在线状态胶囊（在线 / 附近 / 离线 / 未知）+「上次在线 X」，
+  数据直接取同进程节点的 `status()` 快照
 - **日常 CI 构建桌面包（本次）**：`ci.yml` 新增 `package` job，直接复用
   `build-packages.yml`（`publish=none`）——每次 push/PR 在三平台跑通
   cargo-packager / cargo-generate-rpm 打包链路（Windows NSIS+zip、Linux
@@ -105,19 +112,17 @@
 2. **GUI 手工验证两条通道**：WebDAV（地址/账号 → 测试连接 → 双端同步）、局域网直连
    （两台设备同一网络 → 生成码/输入码 → 复制文本自动同步）；确认「未选择同步方式」
    时的提示文案。HTTP 回退/server 暂不作为对外能力（决策 24）
-3. **配对端口的长期方案**：当前靠「配对前暂停节点」绕开端口冲突，代价是配对期间同步
-   中断。上游给 `Watcher::bind` 加 `SO_REUSEADDR`（或配对改用临时端口 + 公告真实端口）
-   后可去掉暂停逻辑
-4. **恢复 HTTP / server 能力**：内置 HTTP 通道与 `ximed-server` 形态当前只保留代码，
+3. **恢复 HTTP / server 能力**：内置 HTTP 通道与 `ximed-server` 形态当前只保留代码，
    后续产品确认后恢复配置入口与部署文档
-5. **托盘/常驻的边角**：macOS Dock 图标在无窗口时点击不会恢复窗口（winit 没有
+4. **托盘/常驻的边角**：macOS Dock 图标在无窗口时点击不会恢复窗口（winit 没有
    reopen 事件，当前只能从菜单栏托盘恢复）；GNOME 无 AppIndicator 扩展时托盘不可见，
    需要探测 StatusNotifierWatcher 并回退成「关窗即退出」；开机自启（三平台）尚未做
-6. 文件同步（跨平台剪贴板文件路径读写，工程量最大）
-7. macOS .app 打包（LSUIElement + 图标）
+5. 文件同步（跨平台剪贴板文件路径读写，工程量最大）
+6. macOS .app 打包（LSUIElement + 图标）
 
 ## 已完成
 
+- [x] **同步上游 p2p 升级（本次，决策 30）**：依赖升 `db9dbc8` / `d996bf6`；`PeerStore` → 宿主 `FilePeerBook`（格式兼容、免迁移）；删除配对前暂停节点；设备页显示每台在线状态；83 项测试通过
 - [x] **Release 数字 tag 触发（本次）**：`release.yml` 支持 `v*` + `0.*`，`0.2.0` 重新 force push
 - [x] **CI macOS runner 迁移（本次）**：`macos-14` → `macos-15` / `macos-15-intel`
 - [x] **CI 依赖源修复（本次）**：移除误跟踪的 `.cargo/config.toml`，Cargo.lock 恢复 git source；CI 无 patch 跑通 clippy/test
@@ -146,6 +151,19 @@
 - [ ] 需要 S3 等长尾云盘时，按 `Transport` trait 原生加一条通道
 
 ## 关键实现细节（本次会话）
+
+- **p2p 升级（db9dbc8）**：`NodeConfig::new(identity, Arc<dyn PeerBook>)`；`PairedPeer` 多了
+  `last_seen`/`paired_at`；`DisplaySession::start(identity, peers, name)`、`join(identity,
+  peers, code, name, ttl)` 都不再收路径；`node.status()` 是水平值快照（不是事件）；
+  端口常量 `TCP_PORT` 47821 / `UDP_PORT` 47822 / `PAIR_PORT` 47823 / `PAIR_UDP_PORT` 47824，
+  配对与同步互不相干
+- **设备表读接口没有错误通道**：`PeerBook::all()` 返回 `Vec`，坏文件只能返回空表；界面的
+  「设备表读取失败」必须走本仓 `peers()`（它保留错误），别把两者混用
+- **带 local patch 跑 cargo 会改 Cargo.lock 的 source**：本次在无 patch 状态执行
+  `cargo fetch` 重生成 lock（git source 钉到新 rev），之后再用 patch 继续本地开发
+- **沙箱下 cargo 的 target-dir**：本机 `~/.cargo/config.toml` 把 target-dir 指到
+  `~/.cache/target`（工作区外，写不进去），验证时用
+  `CARGO_TARGET_DIR=<repo>/target`；首次 `cargo fetch` 新 rev 需要更宽的文件权限
 
 - **P0 依赖迁移**：`xime-sync-domain` 的 git 源从 libximecore 改为 libximep2p（pin
   `b19ecdec…`）；`.cargo/config.toml` 拆两段 patch；xime-plugin pin `bdaff98`；

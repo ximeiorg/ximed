@@ -21,6 +21,8 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # 否则同一依赖图里两个下限无法统一到同一版本。
 config = "0.15.27"
 base64 = "0.22"
+# 设备表里公钥按 hex 存（协议 §6.2 的磁盘格式），反查 x25519 时需要编码比对
+hex = "0.4"
 thiserror = "2"
 # Wayland 会话下经 wlr-data-control 直连真实剪贴板；否则回退 X11/XWayland 通道，
 # 在无剪贴板桥接（如 KDE 未运行 klipper）时读不到 Wayland 原生应用的复制内容

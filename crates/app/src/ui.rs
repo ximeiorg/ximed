@@ -583,6 +583,11 @@ fn update(state: &mut UiState, message: Message) -> Task<Message> {
                 state.pairing_status = "配对码已过期，请重新生成".to_string();
                 state.pairing_error = true;
             }
+            // 设备页按秒刷新在场状态：节点给的是水平值（快照），不是事件——
+            // 断线重连会连发「断开→连上」，按事件改灯会闪。
+            if state.panel == Panel::Device {
+                state.reload_peers();
+            }
         }
         Message::PumpTray => crate::tray::pump(),
         Message::RemovePeer(did) => state.remove_peer(&did),
@@ -1973,7 +1978,7 @@ fn device_view(state: &UiState) -> Element<'_, Message> {
             ),
             settings_item(
                 "监听端口",
-                Some("配对期间会暂停节点（与同步抢同一组端口），结束后自动恢复"),
+                Some("同步监听的端口；配对走独立端口，两者互不影响"),
                 text(port).size(13).color(TEXT_MUTED).into(),
             ),
         ],
@@ -2026,23 +2031,43 @@ fn device_view(state: &UiState) -> Element<'_, Message> {
         ));
     }
     for peer in &state.device_peers {
-        let desc = match &peer.last_addr {
+        // 状态胶囊：输入法常驻节点给出的即时在场状态（同一进程内直接取快照，
+        // 不需要读 status.json 那种跨进程快照文件）。
+        let (state_label, state_fg, state_bg) = match peer.presence {
+            client::p2p::Presence::Online => ("在线", GREEN, GREEN_DIM),
+            client::p2p::Presence::Nearby => ("附近", ACCENT, ACCENT_DIM),
+            client::p2p::Presence::Offline => ("离线", TEXT_MUTED, SURFACE_VARIANT),
+            client::p2p::Presence::Unknown => ("未知", TEXT_FAINT, SURFACE_VARIANT),
+        };
+        let mut desc = match &peer.last_addr {
             Some(addr) => format!("{} · 最近地址 {addr}", short_did(&peer.did)),
             None => format!("{} · 尚未连接过", short_did(&peer.did)),
         };
-        peer_items.push(settings_item(
-            &peer.name,
-            Some(desc),
+        match peer.presence {
+            client::p2p::Presence::Online => desc.push_str(" · 正在同步"),
+            // 「离线」只有在节点确实跑着、只是没连上时才这么说；未知不猜。
+            client::p2p::Presence::Offline => {
+                if let Some(seen) = peer.last_seen {
+                    desc.push_str(&format!(" · 上次在线 {}", format_time(seen)));
+                }
+            }
+            client::p2p::Presence::Nearby => desc.push_str(" · 已发现但未连接"),
+            client::p2p::Presence::Unknown => {}
+        }
+        let control = row![
+            badge(state_label, state_fg, state_bg),
             button("移除")
                 .on_press(Message::RemovePeer(peer.did.clone()))
                 .padding([6, 12])
-                .style(secondary_button)
-                .into(),
-        ));
+                .style(secondary_button),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center);
+        peer_items.push(settings_item(&peer.name, Some(desc), control.into()));
     }
     let peers = settings_group(
         "已配对设备",
-        Some("剪贴板只在这些设备之间同步；移除后需要重新配对"),
+        Some("剪贴板只在这些设备之间同步；状态每秒刷新一次，移除后需要重新配对"),
         peer_items,
     );
 

@@ -435,3 +435,46 @@ SIGABRT，用户只看到「ximed quit unexpectedly」。同一二进制在可�
   clipboard/current.json 齐备）；单测覆盖相对/绝对/点分量与只读目录不 panic。
 - **代价**：非便携模式首次启动不会再读旧的 `./data`。旧版本只发布过 0.2.1，且
   macOS 上本来就起不来，不做迁移；便携模式行为不变。
+
+## 30. 同步上游 p2p 升级：设备表归宿主 + 配对端口独立（2026-11-26）
+
+上游 `libximep2p db9dbc8` + `libximecore d996bf6` 改了三件事：
+
+- `store.rs` 只剩 `PairedPeer` / `PeerBook` trait / `MemoryPeerBook`，SQLite/文件存储
+  移出协议库（移动端不必再编 C 版 sqlite）；
+- `PairedPeer` 新增 `last_seen`，`Node` 新增 `status()` 快照与 `set_background` /
+  `set_network_available`；
+- 配对发现改用独立端口：TCP 47821 同步 / UDP 47822 同步发现 / TCP 47823 配对 /
+  UDP 47824 配对发现。
+
+本仓跟随升级：
+
+1. **依赖钉 rev**：`xime-p2p` + `xime-sync-domain` → `db9dbc8`，三个 `xime-sync-*` →
+   `d996bf6`（该 rev 内部引用 db9dbc8，保证 `Profile` 仍是同一个类型）。CI/发布继续走
+   git 依赖，本地 patch 不入库（决策 26/28）。
+2. **`FilePeerBook`（`client/src/p2p.rs`）**：实现 `PeerBook`，落
+   `<配置目录>/p2p/peers.json`。
+   - 格式与旧版协议库内置存储**完全一致**（`{version, peers[]}`、临时文件 + rename、
+     0600），老用户升级免迁移；
+   - 不选 SQLite：本仓没有统一应用库（配置是 TOML、历史库归 `xime-sync-store`），
+     为几台设备单开一个库文件不划算；直接在 client 引 `rusqlite` 还会把 SQLite 依赖
+     带进不需要 p2p 的 server 形态；
+   - **每次查询读文件、不缓存**：节点、配对会话、界面各持一个实例，必须看到同一份
+     数据。节点每 5 秒重读一次设备表，新配对的设备因此 5 秒内被发现——各缓存一份会
+     变成「配对成功但同步说没配对」；
+   - 写入用进程内全局 `WRITE_LOCK` 串行化「读-改-写」，避免节点学地址与配对写新设备
+     互相用旧快照覆盖（上游把存储移出协议库时点名的就是这个问题）。
+3. **删除「配对前暂停节点」**：`pause_node` / `resume_node` 与相关文档删除。配对走
+   自己的端口，不再与常驻节点冲突，配对期间同步不中断；PROGRESS 里「配对端口长期
+   方案」一条随之关闭。
+4. **在线状态回到设备页**：节点与界面同进程，直接读 `node.status()` 映射成
+   在线 / 附近 / 离线；节点没起来时显示「未知」而不是「离线」——不猜。设备页每 1 秒
+   刷新一次（水平值快照而非事件，重连时状态灯不会闪），`last_seen` 显示「上次在线 X」。
+5. **未接**：`set_background` / `set_network_available`（手机省电那套）桌面端没有触发
+   源，暂不接；C ABI / `xime-p2p-c` 与本仓无关。
+
+验证：`cargo fmt --all --check`；`cargo clippy --workspace --all-targets --locked
+-- -D warnings` 与 `cargo clippy -p app --no-default-features --all-targets --locked
+-- -D warnings` 双绿；`cargo test --workspace --lib --bins --locked` 83 项通过
+（app 26 + client 57，含 p2p 7 项：设备表读写 / 损坏报错 / 重配对保留运行时状态 /
+双实例并发写 / 公钥反查 / 节点在跑时配对可启动 / 即时状态为离线）。
