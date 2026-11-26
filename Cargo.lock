@@ -895,6 +895,7 @@ dependencies = [
  "hex",
  "http",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -7009,7 +7010,6 @@ checksum = "bec9e4a500ca8864c5b47b8b482a73d62e4237670e5b5f1d6b9e3cae50f28f2b"
 [[package]]
 name = "xime-p2p"
 version = "0.1.0"
-source = "git+https://github.com/ximeiorg/libximep2p.git?rev=db9dbc8f8d5b77d53d746524bf30cb0a8c05317b#db9dbc8f8d5b77d53d746524bf30cb0a8c05317b"
 dependencies = [
  "base64 0.23.1",
  "chacha20poly1305 0.11.0",
@@ -7035,7 +7035,6 @@ dependencies = [
 [[package]]
 name = "xime-sync-domain"
 version = "0.1.0"
-source = "git+https://github.com/ximeiorg/libximep2p.git?rev=db9dbc8f8d5b77d53d746524bf30cb0a8c05317b#db9dbc8f8d5b77d53d746524bf30cb0a8c05317b"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -7048,7 +7047,6 @@ dependencies = [
 [[package]]
 name = "xime-sync-server"
 version = "0.1.0"
-source = "git+https://github.com/ximeiorg/libximecore.git?rev=d996bf6503fb90e7fe13bfb0d22edaad057030f8#d996bf6503fb90e7fe13bfb0d22edaad057030f8"
 dependencies = [
  "axum",
  "axum-server",
@@ -7071,7 +7069,6 @@ dependencies = [
 [[package]]
 name = "xime-sync-service"
 version = "0.1.0"
-source = "git+https://github.com/ximeiorg/libximecore.git?rev=d996bf6503fb90e7fe13bfb0d22edaad057030f8#d996bf6503fb90e7fe13bfb0d22edaad057030f8"
 dependencies = [
  "serde_json",
  "tokio",
@@ -7083,7 +7080,6 @@ dependencies = [
 [[package]]
 name = "xime-sync-store"
 version = "0.1.0"
-source = "git+https://github.com/ximeiorg/libximecore.git?rev=d996bf6503fb90e7fe13bfb0d22edaad057030f8#d996bf6503fb90e7fe13bfb0d22edaad057030f8"
 dependencies = [
  "async-trait",
  "rusqlite",

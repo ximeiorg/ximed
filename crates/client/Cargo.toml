@@ -21,6 +21,8 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # 否则同一依赖图里两个下限无法统一到同一版本。
 config = "0.15.27"
 base64 = "0.22"
+# 本地历史库：按 hash 去重需要按行删除（xime-sync-store 的 HistoryRepo 只有追加接口）
+rusqlite = "0.41"
 # 设备表里公钥按 hex 存（协议 §6.2 的磁盘格式），反查 x25519 时需要编码比对
 hex = "0.4"
 thiserror = "2"

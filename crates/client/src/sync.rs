@@ -4,6 +4,8 @@
 //! - 本地轮询发现变化 → 与上次推送的 hash 不同 → 推送到服务器（clipboard.set / PUT）
 //! - 收到服务器变更 → 与本地 hash 及"自写 hash"比对 → 不同才写回本地剪贴板
 //! - 自写抑制：引擎写入本地后记录 hash，轮询到同一 hash 判定为回声，跳过推送
+//! - 本地改动抑制：本地刚改的内容在推送落地前（以及之后一个短窗口内）不被远端旧快照
+//!   覆盖——否则一次在途的 pull 会把用户刚复制的内容顶回上一条（issue #2）
 //!
 //! 引擎是纯逻辑层，不依赖具体剪贴板/传输实现，便于单元测试。
 
@@ -20,6 +22,22 @@ use crate::transport::{HttpTransport, Transport, WsTransport};
 
 /// 推送失败后的重试退避间隔：避免 server 未启动时每轮轮询都重试刷日志。
 const PUSH_RETRY_BACKOFF: Duration = Duration::from_secs(5);
+
+/// 本地改动抑制窗口。
+///
+/// 复现（issue #2）：用户复制 B 的那一刻，一次在途的 pull 带回来的仍是服务器上的旧值 A；
+/// 没有这条抑制，「远端 ≠ 本地」的判定会把 A 写回本地，把刚复制的 B 顶掉——表现就是
+/// 「要复制几遍才粘得出来」。推送成功后再顺延一个窗口：PUT 刚落地时，仍可能有先于它
+/// 发出的 GET 在途。
+const LOCAL_EDIT_GRACE: Duration = Duration::from_secs(3);
+
+/// 本地刚改、还没被远端确认的内容。
+struct PendingLocal {
+    /// 内容 hash（文本与图片共用一套 sha256）。
+    hash: String,
+    /// 抑制截止时间：在此之前，远端送来的**其他**内容不覆盖本地。
+    until: std::time::Instant,
+}
 
 /// client 与 server 的连接状态（引擎上报，供桌面 UI 提示用户）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +84,8 @@ pub struct SyncEngine {
     last_hash: Option<String>,
     /// 自写 hash：引擎写入本地剪贴板的内容 hash，用于回声抑制。
     self_written: Option<String>,
+    /// 本地刚改、尚未被远端确认的内容（issue #2 的抑制依据）。
+    pending_local: Option<PendingLocal>,
     /// 推送失败后的退避截止时间：窗口内不重复尝试同一内容。
     retry_until: Option<std::time::Instant>,
     /// 连接状态回调（桌面形态注入：本地模式提示开启 server，远程模式提示不可用）。
@@ -93,6 +113,7 @@ impl SyncEngine {
             clipboard,
             last_hash: None,
             self_written: None,
+            pending_local: None,
             retry_until: None,
             status_handler: None,
             download_handler: None,
@@ -237,8 +258,34 @@ impl SyncEngine {
         if profile.size as u64 > self.sync.max_file_byte {
             return SyncAction::None;
         }
-        self.last_hash = Some(hash);
+        self.mark_local_edit(&hash);
         SyncAction::Push(profile)
+    }
+
+    /// 记录「本地刚改」：推送落地前压住远端旧快照，避免把用户刚复制的内容顶掉。
+    fn mark_local_edit(&mut self, hash: &str) {
+        self.last_hash = Some(hash.to_string());
+        self.pending_local = Some(PendingLocal {
+            hash: hash.to_string(),
+            until: std::time::Instant::now() + LOCAL_EDIT_GRACE,
+        });
+    }
+
+    /// 远端内容是否该被「本地刚改」压住（返回 true 表示本次不采纳远端）。
+    ///
+    /// 远端 hash 与在途内容相同，说明是我们自己推上去的：清掉标记，交给正常回声逻辑。
+    fn local_edit_pending(&mut self, remote_hash: &str) -> bool {
+        let Some(pending) = self.pending_local.take() else {
+            return false;
+        };
+        if remote_hash == pending.hash {
+            return false;
+        }
+        if std::time::Instant::now() < pending.until {
+            self.pending_local = Some(pending);
+            return true;
+        }
+        false
     }
 
     /// 本地图片轮询决策（纯逻辑，可单测）：剪贴板图片变化且非自写回声 → Push。
@@ -277,7 +324,7 @@ impl SyncEngine {
         if profile.size as u64 > self.sync.max_file_byte {
             return SyncAction::None;
         }
-        self.last_hash = Some(hash);
+        self.mark_local_edit(&hash);
         SyncAction::Push(profile)
     }
 
@@ -285,6 +332,10 @@ impl SyncEngine {
     pub fn apply_remote(&mut self, remote: &Profile) -> SyncAction {
         // 同步主开关或拉取开关关闭：不写入本地
         if !self.sync.switch_on || !self.sync.pull_switch_on {
+            return SyncAction::None;
+        }
+        // 本地刚改、推送还没落地：远端这份多半是推送前的旧快照，不能覆盖用户刚复制的内容
+        if self.local_edit_pending(&remote.hash) {
             return SyncAction::None;
         }
         match remote.r#type {
@@ -347,6 +398,10 @@ impl SyncEngine {
             SyncAction::Push(profile) => {
                 match self.transport.push(&profile).await {
                     Ok(_) => {
+                        // 推送刚落地：仍可能有先于 PUT 发出的 GET 在途，抑制窗口顺延
+                        if let Some(pending) = self.pending_local.as_mut() {
+                            pending.until = std::time::Instant::now() + LOCAL_EDIT_GRACE;
+                        }
                         self.report_status(SyncStatus::Online);
                         // 历史记录：推送成功即本机剪贴板内容生效
                         if let Some(h) = &self.history_handler {
@@ -359,6 +414,12 @@ impl SyncEngine {
                         tracing::debug!("push failed: {e}");
                         // 退避重试：间隔内不再尝试，server 起来后自动补推
                         self.retry_until = Some(std::time::Instant::now() + PUSH_RETRY_BACKOFF);
+                        // 推不上去时本地内容仍是用户刚复制的：保护到下一次重试之后，
+                        // 否则旧快照会把它顶掉（issue #2 的离线分支）。
+                        if let Some(pending) = self.pending_local.as_mut() {
+                            pending.until =
+                                std::time::Instant::now() + PUSH_RETRY_BACKOFF + LOCAL_EDIT_GRACE;
+                        }
                         self.report_status(SyncStatus::Offline);
                     }
                 }
@@ -591,6 +652,108 @@ mod tests {
         // 本地未变：不重复推送
         let a2 = e.on_local_poll(cb.get());
         assert_eq!(a2, SyncAction::None);
+    }
+
+    /// issue #2：本地刚复制的内容不能被在途 pull 带回来的旧快照覆盖。
+    #[test]
+    fn local_edit_is_not_overwritten_by_inflight_old_snapshot() {
+        let old = Profile::from_text("上一條", Some("dev-b".to_string()));
+        let t = Arc::new(MockTransport::new(Some(old.clone())));
+        let (mut e, cb) = engine_with_transport("dev-a", t.clone());
+
+        // 用户复制了新内容，引擎决定推送（此刻服务器上仍是旧值）
+        cb.simulate_external_copy("刚复制的内容");
+        let a = e.on_local_poll(cb.get());
+        assert!(matches!(a, SyncAction::Push(_)));
+
+        // 推送还没落地，一次在途 pull 带回了旧快照
+        assert_eq!(
+            e.apply_remote(&old),
+            SyncAction::None,
+            "本地刚改时不能采纳旧远端"
+        );
+        assert_eq!(
+            cb.get().as_deref(),
+            Some("刚复制的内容"),
+            "本地内容不能被顶掉"
+        );
+    }
+
+    /// 推送落地后仍要短暂压住在途旧快照（先于 PUT 发出、之后才返回的 GET）。
+    #[tokio::test]
+    async fn push_landing_keeps_stale_snapshot_suppressed() {
+        let old = Profile::from_text("上一條", Some("dev-b".to_string()));
+        let t = Arc::new(MockTransport::new(Some(old.clone())));
+        let (mut e, cb) = engine_with_transport("dev-a", t.clone());
+
+        cb.simulate_external_copy("刚复制的内容");
+        let a = e.on_local_poll(cb.get());
+        e.execute(a).await; // 推送成功，服务器已是新内容
+
+        assert_eq!(
+            e.apply_remote(&old),
+            SyncAction::None,
+            "推送刚落地时在途旧快照仍应被压住"
+        );
+        assert_eq!(cb.get().as_deref(), Some("刚复制的内容"));
+    }
+
+    /// 抑制窗口结束后，真正的新远端内容仍要能落地。
+    #[test]
+    fn new_remote_is_adopted_after_grace_expires() {
+        let t = Arc::new(MockTransport::new(None));
+        let (mut e, cb) = engine_with_transport("dev-a", t.clone());
+        cb.simulate_external_copy("本地内容");
+        let _ = e.on_local_poll(cb.get());
+
+        // 把抑制窗口拨到过去（模拟窗口已过）
+        e.pending_local.as_mut().unwrap().until =
+            std::time::Instant::now() - Duration::from_secs(1);
+
+        let remote = Profile::from_text("另一台设备的新内容", Some("dev-b".to_string()));
+        match e.apply_remote(&remote) {
+            SyncAction::Write { text, .. } => assert_eq!(text, "另一台设备的新内容"),
+            other => panic!("expected write, got {other:?}"),
+        }
+    }
+
+    /// 自己推上去的内容回来时按回声处理，并清掉在途标记。
+    #[tokio::test]
+    async fn echo_of_pushed_content_clears_pending() {
+        let t = Arc::new(MockTransport::new(None));
+        let (mut e, cb) = engine_with_transport("dev-a", t.clone());
+        cb.simulate_external_copy("刚复制的内容");
+        let a = e.on_local_poll(cb.get());
+        e.execute(a).await;
+
+        let echoed = t.remote.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            e.apply_remote(&echoed),
+            SyncAction::None,
+            "回声不该重复写本地"
+        );
+        assert!(e.pending_local.is_none(), "回声到达后应清掉在途标记");
+    }
+
+    /// 推送失败时，本地刚复制的内容要一直受保护，不能被旧快照顶掉。
+    #[tokio::test]
+    async fn failed_push_keeps_local_edit_protected() {
+        let old = Profile::from_text("上一條", Some("dev-b".to_string()));
+        let t = Arc::new(MockTransport::new(Some(old.clone())));
+        let (mut e, cb) = engine_with_transport("dev-a", t.clone());
+
+        *t.fail_push.lock().unwrap() = true;
+        cb.simulate_external_copy("刚复制的内容");
+        let a = e.on_local_poll(cb.get());
+        e.execute(a).await;
+        assert!(e.retry_until.is_some(), "失败应当进入退避");
+
+        assert_eq!(
+            e.apply_remote(&old),
+            SyncAction::None,
+            "推送失败期间旧快照也不能顶掉本地"
+        );
+        assert_eq!(cb.get().as_deref(), Some("刚复制的内容"));
     }
 
     #[test]
